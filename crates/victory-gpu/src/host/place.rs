@@ -145,6 +145,8 @@ pub(super) fn read_by(runs: &[&HostList], written: &[(usize, usize)]) -> bool {
                     let (at, len) = staging.memory();
                     (touches(&ranges, at, at + len), 3)
                 }
+                // a movie plane's own upload (`Step::Plane`): read as a texture
+                &Step::Plane((at, len), _) => (touches(&ranges, at, at.saturating_add(len)), 3),
                 Step::Host(_, (from, to)) => (touches(&ranges, *from, *to), 4),
                 _ => (false, 0),
             };
