@@ -139,8 +139,12 @@ allocators grew past a size instead of pooling it; share preludes.
 Windows: the copied ones were 4 MiB grid cells over streaming memory the title maps 64 KiB
 page by page (517 of 548 cells "with holes", 31 scattered), while what an ask names is nearly
 always one run of the pool. `VICTORY_WINDOW_EXACT=1` places just the asked range (64 KiB lines)
-in place first. Left: asks with no length (cells, ~1.6 GB "without a length") and truly
-scattered ones.
+in place first. Asks with no length (root views: the shader reads from the address up to the cell's end)
+are placed in place only when that whole tail is one run of the pool, so the bytes read are
+the same as a copy's: 114 of them in a run, no measurable memory change; ~1.6 GB of copies
+"without a length" remain. Doing better needs to know how far a root view reads (the draw's
+vertex count x stride, say); guessing would give zeros past a gap, broken geometry.
+Truly scattered windows: ~30, ~130 MB.
 Targets: (1) scattered windows (a placed buffer per run, or the
 64 KiB-directory addressing the ray-tracing path uses), (2) command-list growth,
 (3) the Rust heap.

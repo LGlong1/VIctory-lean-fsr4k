@@ -516,7 +516,7 @@ fn say() {
     let s: Vec<u64> = STATS.iter().map(|s| s.load(Ordering::Relaxed)).collect();
     tracing::info!(
         "title memory in place: {} windows {} MB, {} title buffers {} MB (no copy, no refresh, no copy-back); turned down: {} view memory or not private memory committed whole, \
-         {} refused by the host, {} over VICTORY_INPLACE_MB; {} let go because their memory changed; view memory not one run: {} scattered {} MB, {} with holes {} MB",
+         {} refused by the host, {} over VICTORY_INPLACE_MB; {} let go because their memory changed; view memory not one run: {} scattered {} MB, {} with holes {} MB;          exact windows (VICTORY_WINDOW_EXACT) {}, of them {} tails of asks without a length",
         s[0],
         s[1] >> 20,
         s[2],
@@ -528,7 +528,9 @@ fn say() {
         TURNED[0].load(Ordering::Relaxed),
         TURNED[1].load(Ordering::Relaxed) >> 20,
         TURNED[2].load(Ordering::Relaxed),
-        TURNED[3].load(Ordering::Relaxed) >> 20
+        TURNED[3].load(Ordering::Relaxed) >> 20,
+        crate::shadow::EXACT_WINDOWS.load(Ordering::Relaxed),
+        crate::shadow::EXACT_TAILS.load(Ordering::Relaxed)
     );
 }
 

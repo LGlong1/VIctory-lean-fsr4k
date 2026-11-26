@@ -5525,6 +5525,9 @@ fn exact_windows() -> bool {
 /// Exact windows placed in place ([`exact_windows`]), since the start.
 pub(crate) static EXACT_WINDOWS: AtomicU64 = AtomicU64::new(0);
 
+/// Of [`EXACT_WINDOWS`], those of asks without a length (the cell's tail from the ask).
+pub(crate) static EXACT_TAILS: AtomicU64 = AtomicU64::new(0);
+
 fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Shadow>> {
     let (cell, _) = window_of(address, end, WINDOW);
     let named = window_of(address, end, if unsized_ask { WINDOW } else { window() });
@@ -5545,10 +5548,19 @@ fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Sha
             shadow.unsized_asks.fetch_add(1, Ordering::Relaxed);
         }
     };
-    // Just what is asked, in place (`exact_windows`): found again by the same lines.
-    let exact = (!unsized_ask && exact_windows()).then(|| {
+    // Just what is asked, in place (`exact_windows`): found again by the same lines. An ask
+    // without a length (a root view) reads from its address up to its 4 MiB cell's end, as
+    // its copy would hold: in place only if all of that is one run of the pool, so the
+    // shader reads the same bytes either way.
+    let exact = exact_windows().then(|| {
         let at = address & !0xffff;
-        (at, end.next_multiple_of(0x10000) - at)
+        let to = if unsized_ask {
+            let (start, len) = window_of(address, end, WINDOW);
+            start + len
+        } else {
+            end.next_multiple_of(0x10000)
+        };
+        (at, to - at)
     });
     if let Some(key) = exact
         && let Some(shadow) = LOOSE.read().unwrap_or_else(|e| e.into_inner()).get(&key)
@@ -5575,6 +5587,9 @@ fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Sha
             note(&shadow);
             map.insert(key, shadow.clone());
             EXACT_WINDOWS.fetch_add(1, Ordering::Relaxed);
+            if unsized_ask {
+                EXACT_TAILS.fetch_add(1, Ordering::Relaxed);
+            }
             return Some(shadow);
         }
     }
