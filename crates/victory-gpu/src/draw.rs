@@ -118,6 +118,53 @@ fn recheck_soon() -> bool {
     *ON.get_or_init(|| std::env::var_os("VICTORY_RECHECK_SOON").is_none_or(|v| v != "0"))
 }
 
+/// For how many frames after a texture picked by index was last found
+/// changed with nothing to tell of it, it is looked at every frame
+/// (`VICTORY_PAINTED_FRAMES`, default 150; 0: as before).
+///
+/// Such textures are ones the title paints through another view of their
+/// pages, which the write watch on this view does not see: the opening
+/// video's planes (2560 x 1440 bytes of luma, all blocks shown elsewhere),
+/// decoded into a ring of buffers. Each buffer changes every few frames,
+/// not every one, so a look that found it as it was backed the next one off
+/// to 12, then 40 frames ([`RECHECK_FRAMES`]), and the frame that buffer
+/// showed meanwhile was an old one: the video went back and forth. A look
+/// is a 48 KiB fingerprint; a few planes a frame cost next to nothing.
+fn painted_frames() -> u64 {
+    static N: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *N.get_or_init(|| std::env::var("VICTORY_PAINTED_FRAMES").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(150))
+}
+
+/// Slots found changed with nothing to tell of it, and the frame of the
+/// last such find.
+static PAINTED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, u64>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Notes that slot `index` was found changed with nothing to tell of it.
+fn note_painted(index: u32, frame: u64) {
+    if painted_frames() > 0 {
+        PAINTED.lock().unwrap_or_else(|e| e.into_inner()).insert(index, frame);
+    }
+}
+
+/// Whether slot `index` was found changed with nothing to tell of it in the
+/// last [`painted_frames`] frames; one painted longer ago is forgotten.
+fn painted_lately(index: u32, frame: u64) -> bool {
+    let most = painted_frames();
+    if most == 0 {
+        return false;
+    }
+    let mut painted = PAINTED.lock().unwrap_or_else(|e| e.into_inner());
+    match painted.get(&index) {
+        Some(&at) if frame.saturating_sub(at) <= most => true,
+        Some(_) => {
+            painted.remove(&index);
+            false
+        }
+        None => false,
+    }
+}
+
 /// Frames ahead the pass before a bake takes slots from that are due only
 /// then ([`bake_exact`]): those of notices (1 and 2), and the first looks
 /// again ([`RECHECK_FRAMES`]), these at the frame's first bake alone (a
@@ -535,6 +582,33 @@ impl<T> HeapRanges<T> {
 
     fn ranges(&self) -> impl Iterator<Item = &(T, u64, u64)> {
         self.0.iter().flatten()
+    }
+}
+
+#[cfg(test)]
+mod painted_tests {
+    use super::{note_painted, painted_frames, painted_lately};
+
+    /// A slot found changed with nothing to tell of it is looked at every
+    /// frame for `painted_frames` frames after the last such find, then
+    /// forgotten; a slot never found so is not.
+    #[test]
+    fn a_painted_slot_is_looked_at_every_frame_for_a_while() {
+        let most = painted_frames();
+        if most == 0 {
+            return;
+        }
+        let slot = u32::MAX - 7;
+        assert!(!painted_lately(slot, 10));
+        note_painted(slot, 100);
+        assert!(painted_lately(slot, 101));
+        assert!(painted_lately(slot, 100 + most));
+        // Found changed again: the window starts over from there.
+        note_painted(slot, 150);
+        assert!(painted_lately(slot, 150 + most));
+        // Long unchanged: forgotten, and stays so.
+        assert!(!painted_lately(slot, 151 + most));
+        assert!(!painted_lately(slot, 152 + most));
     }
 }
 
@@ -2285,6 +2359,12 @@ impl State {
             if let Some((at, len, print, looks, uploaded)) = host.texture_slot_checked(index) {
                 if crate::texture::fingerprint(at, len) == print {
                     HEAP_TEXTURES_RECHECKED[0].fetch_add(1, Ordering::Relaxed);
+                    // Painted lately ([`painted_lately`]): looked at in the
+                    // next frame again, not 12, 40, 120 frames on.
+                    if painted_lately(index, frame) {
+                        host.texture_slot_recheck(index, write, frame + 1, (at, len), print, looks, uploaded);
+                        continue;
+                    }
                     match RECHECK_FRAMES.get(usize::from(looks) + 1) {
                         Some(wait) => {
                             host.texture_slot_recheck(index, write, frame + wait, (at, len), print, looks + 1, uploaded)
@@ -2296,6 +2376,7 @@ impl State {
                 if recheck_soon() {
                     again_in = 1;
                 }
+                note_painted(index, frame);
                 let n = HEAP_TEXTURES_RECHECKED[1].fetch_add(1, Ordering::Relaxed);
                 if n < 200 || n.is_multiple_of(1000) {
                     // Whether its pages are the title's at other addresses
