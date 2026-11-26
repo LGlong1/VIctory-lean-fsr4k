@@ -940,9 +940,20 @@ fn meeting_mode() -> u32 {
 /// the group wait, and it hangs where the console waves of a group go different ways: so
 /// such programs could not take branches wave-wide, and kept 64-lane waves a 32-lane host
 /// refuses (the ray-tracing structure builder's scans, groups of 256 and 512).
+///
+/// Off unless asked for (`VICTORY_PAIR_MEET=1`). On by default, an RTX 3060 hung three times
+/// within seconds of the world's first frames (DRED: hung), in programs of the
+/// `scattering_transmittance_system` whose host waves met by pairs where they had met at group
+/// barriers before; the PC then stopped with bugcheck 0x119 while pipelines were made. A run
+/// with pair meetings off reached the cutscene lit. Translator 1004 keeps a wave together in
+/// the wait (the suspected cause); until a run shows it holds, it stays off.
 pub(super) fn pair_meetings() -> bool {
+    #[cfg(test)]
+    if let Some(on) = TEST_PAIR_MEET.get() {
+        return on;
+    }
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("VICTORY_PAIR_MEET").is_none_or(|v| v != "0"))
+    *ON.get_or_init(|| std::env::var_os("VICTORY_PAIR_MEET").is_some_and(|v| v == "1"))
 }
 
 /// LDS accesses of a console wave run as two host waves, where some sit in blocks that only
@@ -1233,6 +1244,8 @@ pub(super) fn host_max_wave() -> u32 {
 thread_local! {
     /// A test's host wave size, for its thread only ([`set_host_max_wave`] is the process's).
     pub(super) static TEST_HOST_WAVE: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+    /// A test's pair meetings ([`pair_meetings`]), for its thread only.
+    pub(super) static TEST_PAIR_MEET: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
 pub(super) fn reads_mask_as_data(st: &Structured, i: &Inst) -> bool {
@@ -4420,7 +4433,8 @@ impl<'a> Lower<'a> {
         let of_two = self.s.m.bin(block, Bin::Add, round, k2);
         let of_one = self.s.m.bin(block, Bin::Add, found, k1);
         let target = self.s.m.select(block, both, of_two, of_one);
-        self.s.m.spin_until(block, ptr, target);
+        let uniform = self.s.m.named_function("dx.op.waveReadLaneFirst.i32");
+        self.s.m.spin_until(block, ptr, target, uniform);
         self.s.op(block, "barrier", Attr::NoDuplicate, void, 80, &[fence]);
     }
 

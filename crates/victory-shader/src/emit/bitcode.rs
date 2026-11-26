@@ -211,8 +211,11 @@ enum MdDef {
     Node(Vec<Option<Md>>),
 }
 
-/// The most reads a [`Module::spin_until`] loop makes before it gives up.
-pub(crate) const SPIN_MOST: u32 = 1 << 20;
+/// The most reads a [`Module::spin_until`] loop makes before it gives up. A meeting waits
+/// for the other host wave of its console wave, which is resident beside it: microseconds.
+/// 2^20 reads (tens of milliseconds a wave) over a dispatch of thousands of waves was enough
+/// for the card's two-second timeout; 2^14 is about a millisecond.
+pub(crate) const SPIN_MOST: u32 = 1 << 14;
 
 #[derive(Default)]
 pub(crate) struct Module {
@@ -230,8 +233,9 @@ pub(crate) struct Module {
     /// See [`Tag`]: by instruction.
     tags: HashMap<u32, Tag>,
     /// Spins still to be made loops ([`Module::spin_until`]): the mark's
-    /// instruction, the pointer, the target.
-    spins: Vec<(u32, V, V)>,
+    /// instruction, the pointer, the target, and the function that gives every lane the
+    /// first lane's value (`dx.op.waveReadLaneFirst.i32`), if the wait is a wave's.
+    spins: Vec<(u32, V, V, Option<V>)>,
 }
 
 impl Module {
@@ -510,10 +514,21 @@ impl Module {
     /// least `target` (unsigned), read by atomics. Straight-line until [`Module::lower_spins`]
     /// makes it a loop, so whoever emits it may go on adding to `block` as before: what is
     /// added after it runs after the wait.
-    pub fn spin_until(&mut self, block: usize, ptr: V, target: V) {
+    ///
+    /// `uniform`: the function `dx.op.waveReadLaneFirst.i32`. Each lane's atomic read is its
+    /// own, and the dword can change between the lanes of one read: some lanes would leave
+    /// the loop and others go round again, and the wave come apart inside it (a lane that
+    /// left reaches the next wait alone and is counted for its wave twice: on an RTX 3060
+    /// the card hung). With it every lane decides on the first lane's value.
+    pub fn spin_until(&mut self, block: usize, ptr: V, target: V, uniform: Option<V>) {
         if let V::Inst(i) = self.bin(block, Bin::Or, target, target) {
-            self.spins.push((i, ptr, target));
+            self.spins.push((i, ptr, target, uniform));
         }
+    }
+
+    /// A function declared by name, if it is.
+    pub fn named_function(&self, name: &str) -> Option<V> {
+        self.func_ids.get(name).map(|&i| V::Func(i))
     }
 
     /// Makes every [`Module::spin_until`] a loop: its block ends there and branches to a
@@ -524,9 +539,9 @@ impl Module {
         if self.spins.is_empty() {
             return;
         }
-        let marks: HashMap<u32, (V, V)> = std::mem::take(&mut self.spins)
+        let marks: HashMap<u32, (V, V, Option<V>)> = std::mem::take(&mut self.spins)
             .into_iter()
-            .map(|(i, ptr, target)| (i, (ptr, target)))
+            .map(|(i, ptr, target, uniform)| (i, (ptr, target, uniform)))
             .collect();
         let mut b = 0;
         while b < self.blocks.len() {
@@ -534,7 +549,7 @@ impl Module {
                 b += 1;
                 continue;
             };
-            let (ptr, target) = marks[&self.blocks[b].body[k]];
+            let (ptr, target, uniform) = marks[&self.blocks[b].body[k]];
             let tail = self.blocks[b].body.split_off(k + 1);
             // (the mark: nothing reads it)
             self.blocks[b].body.pop();
@@ -559,6 +574,14 @@ impl Module {
             self.blocks[b].term = Some(Term::Br(wait));
             let zero = self.i32(0);
             let seen = self.atomic(wait, Rmw::Or, ptr, zero);
+            // (the first lane's read for every lane: the wave stays together)
+            let seen = match uniform {
+                Some(f) => {
+                    let opcode = self.i32(118);
+                    self.call(wait, f, vec![opcode, seen])
+                }
+                None => seen,
+            };
             let there = self.cmp(wait, pred::IUGE, seen, target);
             // A wait that never ends would lose the card (a timeout): after this many reads it
             // gives up, and a meeting that went wrong costs wrong data instead.

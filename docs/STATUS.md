@@ -5,7 +5,7 @@ The living record of this fork: where it stands, what is broken, what is next.
 changes** (a fix lands, a run is measured, a plan changes). Newest facts win;
 old ones are corrected, not left beside the new.
 
-Last updated: 2026-11-26 (session 1).
+Last updated: 2026-11-26 (session 1, after the 0x119 reboot).
 
 ## Goal
 
@@ -33,11 +33,12 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
 | Stage | State |
 |---|---|
 | Boot, splash, menus, loading screens | 30 fps, ~33 ms/frame |
-| Intro video | plays but jumps back and forth ("rewind"); cause not found yet |
-| Opening cutscene | renders the scene (street, lamps, characters as silhouettes) but dark; 1-3 fps |
+| Intro video | **fixed** (cool_fox's per-list movie-plane uploads) |
+| Opening cutscene | renders lit (faces, interiors, street) on Series S with pair meetings off; **2-3.5 fps** (280-650 ms/frame) |
 | Gameplay | not reached in a test run yet |
-| Lighting | dark: ray-traced light needs the BVH builder, which could not run on NVIDIA until the wave64 work below (not yet tested in game) |
-| Memory | fork uses 40-46 GB private; commit limit here ~44 GB |
+| Stability | pair meetings on: the card hung within seconds of the world (3 TDRs), then the PC bugchecked 0x119 during `warm`. Pair meetings are **off by default** since 1005 |
+| Lighting | lit without the BVH builder for the cutscene; builder runs need pair meetings (opt-in) |
+| Memory | Series X: 20-25 GB private at the cutscene on a 24 GB PC (free RAM < 1 GB, paging, 2-7 s frames); Series S: 15-21 GB |
 
 ## Done (session 1)
 
@@ -55,11 +56,13 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
     counter, emitted straight-line and made a loop after lowering; gives up after
     2^20 reads so a broken meeting costs data, not the card.
   - `Lower::meet` (emit/lower.rs): the two host waves of a console wave meet by
-    themselves (per-console-wave counter) instead of at group barriers
-    (`VICTORY_PAIR_MEET=0`: off).
-  - `widen` allowed for groups of several console waves, and on by default
-    (`VICTORY_WAVE_WIDE=0`/`1` to force); 64-thread groups use pair meetings in
-    their wave-wide forms (`with_wide_meetings`).
+    themselves (per-console-wave counter) instead of at group barriers.
+    **Opt-in since 1005 (`VICTORY_PAIR_MEET=1`)**: on by default it hung the card in
+    `scattering_transmittance_system` programs. 1004 keeps the wave together in the
+    wait (each lane's atomic read could differ, splitting the warp inside the spin);
+    1003 lowered the give-up cap to 2^14 reads. Not yet re-tested in game.
+  - `widen` allowed for groups of several console waves when pair meetings are on
+    (`VICTORY_WAVE_WIDE=0`/`1` to force); 64-thread groups only with `=1`.
   - Result: builder 52/52 pipelines accepted on the 3060 (was 43); game compute
     shaders needing wave64 29 → 1 (+2 that now exceed 32 KiB of LDS).
   - GPU test: `wave64_tests::a_wave_or_inside_a_lane_branch_in_a_group_of_four_console_waves`.
@@ -74,42 +77,50 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
 
 ## Open issues (most important first)
 
-1. **Lighting dark on NVIDIA.** Next: warm with the new translator, run with
-   `scripts\play.ps1 -RayTracing` (VICTORY_BVH_BUILDER=1), look at frames.
-2. **Frame rate.** CPU-bound: one thread prepares submissions (fxceless measured
-   ~70 ms + 13 ms per 1,000 draws on a 14700KF). 6 cores here. See Plans.
-3. **Intro video rewinds.** The video decoder's planes went through one staging
-   buffer shared by frames in flight. cool_fox's per-list movie-plane uploads are
-   in; to be checked in a run.
-4. **71 mesh shaders (ped skinning) fail DXIL validation**: vertex + primitive
-   output > 32 KiB. May draw nothing on NVIDIA.
-5. **Memory 40-46 GB.** CGBJ claims 8-10 GB.
-6. Wave64 leftovers: `vfx_triangleClip:CS_CollectTriangles(_Meshlets)` (title
-   uses exactly 32 KiB of LDS, no room for split-wave bookkeeping); one widened
-   program refused with "a descriptor neither loaded nor built".
-7. 6 untranslatable NVIDIA-only builder programs from session start are now
-   translated (part of the wave64 fix); verify in game.
+1. **CPU: write-watch askings.** The game writes ~2,200 pages (9 MB) a frame; to find
+   them the runtime asks Windows about 1.2 GB (`GetWriteWatch`, ~61-180 ns a page):
+   **73-790 ms a frame** ("watch(ms)" in run summaries). Fix: guard pages (read-only,
+   a fault per page written) for private memory that is rarely written, as view
+   memory already does (`watch.rs`). Care: Windows' own writes into title memory
+   (file reads) cannot fault the way the title's do.
+2. **Memory / paging.** 15-25 GB private on a 24 GB PC; free RAM < 1 GB for most
+   of the cutscene, frames of 2-7 s. Host copies of title memory 3.9 GB (2.8 GB
+   "windows" outside buffers), shared buffers 4.1 GB, host textures 5.2 GB. First
+   lever: `VICTORY_INPLACE=1` (windows opened in place, no copy: less memory, less
+   watching and copying). Series S profile.
+3. **CPU: preparing 140-350 ms a frame**, of it copies 40-120 ms (~100 MB),
+   refreshes ~130 ms (4,346 of 5,302 known to copy nothing), copy-back 60-100 ms.
+4. **Pair meetings hang the card** (opt-in now): re-test 1004's uniform wait with
+   `VICTORY_PAIR_MEET=1` on Series S, short run, before turning on.
+5. **71 mesh shaders (ped skinning) fail DXIL validation**: vertex + primitive
+   output > 32 KiB.
+6. Wave64 leftovers without pair meetings: 23 64-thread compute programs dropped
+   ("no wave32 lowering"), the builder's 9.
 
 ## Plans (in order)
 
-1. Retranslate (`victory shaders ...`) and `victory warm --used` at version 1002.
-2. Unattended runs: Series X vs Series S, then `-RayTracing`; look at the frames.
-3. CPU cost of the submission path: make the hot code cheaper, move work to the
-   GPU where it is a better fit, avoid work that is redone each frame.
-   Biggest measured cost: copy-back of shader writes (104 ms/frame in the
-   cutscene, 385 MB compared on the CPU); first lever: more host copies on the
-   card (`VICTORY_CARD_BUFFERS_MIN_MB=1`, `VICTORY_CARD_BUFFERS_MB=1536`), where
-   compares run on the GPU.
-4. Lighting with the builder on; then the mesh output limit; then memory.
+1. Build 1005 (pair meetings opt-in), tests, retranslate, `warm --used --jobs 4`.
+2. Series S run, then the same with `VICTORY_INPLACE=1`: memory and watch time.
+3. Guard pages for rarely written private memory (issue 1): the biggest CPU cost.
+4. Refresh overhead for refreshes known to copy nothing (issue 3).
+5. Re-test pair meetings (1004's uniform wait), short Series S run; then the builder
+   (`-RayTracing`).
 
 ## Unattended runs
 
 `scripts\autotest.ps1 -Exe <game>\game_scarlett_master.exe -Name <name> [-Seconds 300]
-[-Console series-s] [-RayTracing] [-More @{...}]`: starts the title with play.ps1's
-settings, presses Enter every 5 s from 15 s to 4 min (`VICTORY_KEYS`), saves frames
-as PNG every 150 frames (`VICTORY_CAPTURE`), stops it after `-Seconds`, and writes
-`E:\Dev\victory-data\runs\<name>-<time>\summary.txt` (frame-rate timeline, refused
-pipelines, warnings) beside `log.txt` and `frames\`.
+[-SceneLines 10] [-Console series-s] [-RayTracing] [-More @{...}]`: starts the title
+with play.ps1's settings, presses Enter every 5 s from 15 s to 4 min (`VICTORY_KEYS`),
+saves frames as PNG every 150 frames (`VICTORY_CAPTURE`), and stops by itself once
+the log has `-SceneLines` frame lines (~5 s each) of 500+ draws, when the card is
+lost, or after `-Seconds`. The log is UTF-8, one line each (a `*>` redirect writes
+UTF-16 wrapped at 120 columns). `scripts\runsummary.ps1 -Run <folder>` writes
+`summary.txt`: per frame line fps, ms, preparing, copies, textures, GPU, copy-back,
+**watch ms**, draws, dropped, private/free MB; the scene's median; peak memory.
+
+**Safety:** a run that hangs the card costs a driver reset (TDR); three in a row
+were followed by a bugcheck (0x119) on this PC. Keep runs short, change one thing at
+a time, use `warm --jobs 4`, and do not build while a run is going (RAM).
 
 ## Measurements log
 
@@ -117,3 +128,6 @@ pipelines, warnings) beside `log.txt` and `frames\`.
 |---|---|---|---|
 | 2026-11-26 | afe6ea1 + warm | menus | 30 fps, 33 ms |
 | 2026-11-26 | afe6ea1 + warm | opening cutscene | 1-3 fps, dark, renders geometry |
+| 2026-11-26 | 1002 (pair meet on), Series X | world load | card hung at 72 s; 19.8 GB private, 1.9 GB free |
+| 2026-11-26 | 1002, Series S | world load | card hung at 62 s (scattering_transmittance_system) |
+| 2026-11-26 | 1003, Series S, `VICTORY_PAIR_MEET=0` | opening cutscene | lit; 2-3.5 fps, preparing 140-350 ms, watch 20-790 ms, 19-21 GB private |

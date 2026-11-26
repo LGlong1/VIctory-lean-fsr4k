@@ -543,12 +543,20 @@ pub fn emit(
         // and `_Trail`), so it was off unless asked for. Now its host waves meet by pairs
         // (`lower::pair_meetings`, `lower::with_wide_meetings`), in groups of one console
         // wave or several: no group barrier stands in a branch, and a meeting that went wrong
-        // gives up waiting instead of hanging the card (`bitcode::Module::lower_spins`). On by
-        // default with pair meetings; `VICTORY_WAVE_WIDE=0`: never, `=1`: always. The 32-lane
-        // programs' form below, which has no barrier, stays on.
+        // gives up waiting instead of hanging the card (`bitcode::Module::lower_spins`).
+        // On by default only for groups of several console waves (the ray-tracing structure
+        // builder's scans, which run with `VICTORY_BVH_BUILDER=1`). Groups of one console
+        // wave keep it off unless asked for: on an RTX 3060 the card hung (DRED: hung) about
+        // ten seconds after three such programs first ran in the world
+        // (`vfx_triangleClip:CS_DefragHeap_ComputeRelocations`, `GpuParticleUpdate:CS_Visibility`,
+        // `sr_tracing:CS_Tiling_Generate_Opaque`), as their group-barrier form did in runs
+        // 121-124: the wave-wide form of those programs is suspect, not the barrier.
+        // `VICTORY_WAVE_WIDE=0`: never, `=1`: always. The 32-lane programs' form below, which
+        // has no barrier, stays on.
+        let several = matches!(native.io, crate::native::StageIo::Cs(cs) if cs.threads.iter().product::<u32>() > 64);
         let wide_on = match std::env::var_os("VICTORY_WAVE_WIDE") {
             Some(v) => v == "1",
-            None => lower::pair_meetings(),
+            None => several && lower::pair_meetings(),
         };
         // (cool_fox 8cc31ab) With pair meetings off: one loop shape a single console wave
         // iterates until both halves are done is still taken wave-wide, its latch checked

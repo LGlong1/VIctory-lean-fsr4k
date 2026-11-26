@@ -771,7 +771,11 @@ fn a_wave_or_inside_a_lane_branch_in_a_group_of_four_console_waves() {
         .find(|&b| p.blocks[b].insts.last().is_some_and(|i| i.name() == "s_cbranch_execz"))
         .expect("the branch");
     let wide = HashSet::from([branch]);
-    let shader = lowered(&native, &p, &wide).expect("lower");
+    // (pair meetings are off unless asked for; a group barrier in this branch would hang)
+    let was = lower::TEST_PAIR_MEET.replace(Some(true));
+    let shader = lowered(&native, &p, &wide);
+    lower::TEST_PAIR_MEET.set(was);
+    let shader = shader.expect("lower");
     if let Ok(mut v) = validator::Validator::load(validator::Validator::default_path().as_deref()) {
         let mut copy = shader.dxil.clone();
         v.validate(&mut copy).expect("DXIL validation failed");

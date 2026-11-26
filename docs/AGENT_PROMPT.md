@@ -26,7 +26,15 @@ Belobug, DexNom and our own. Machine: i5-11400F, 24 GB RAM, RTX 3060 12 GB.
   it is read, and a test where it can have one (GPU tests run on the 3060).
 - Commit messages say what changed and why, in the repo's style (plain
   sentences, the measured numbers), ending with the co-author line in use.
-- **Update `docs/STATUS.md`** whenever something changes: a fix, a measurement,
+- **Bump `victory_shader::TRANSLATOR_VERSION`** (crates/victory-shader/src/lib.rs,
+  this fork counts from 1001) with any change to what the translator emits: the
+  shader cache is keyed by it, not by the source, so without a bump the game keeps
+  loading the old translations. Then `victory shaders ...` and `warm` again.
+- **Do not hang the card.** A GPU hang is a driver reset (TDR); three in a row were
+  followed by a bugcheck 0x119 on the user's PC. Anything that can spin or wait on
+  the GPU is opt-in until a short run shows it holds; runs are short; one change
+  at a time; `warm --jobs 4`; nothing heavy (builds) while a run is going.
+- - **Update `docs/STATUS.md`** whenever something changes: a fix, a measurement,
   a new issue, a changed plan. Keep it short and current.
 
 ## Layout and commands
@@ -64,4 +72,6 @@ Belobug, DexNom and our own. Machine: i5-11400F, 24 GB RAM, RTX 3060 12 GB.
 Measure, read the code, change the smallest thing that fixes the cause, test it
 on the card, record the result in STATUS.md, commit. When a run is needed and
 the user is away, use the unattended harness (`scripts\autotest.ps1`, see
-STATUS.md) instead of waiting.
+STATUS.md): it stops by itself after about a minute of a scene, and
+`scripts\runsummary.ps1` turns its log into a table (fps, preparing, copies, watch
+ms, memory) to compare runs by.
