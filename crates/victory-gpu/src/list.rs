@@ -205,10 +205,10 @@ impl Detached {
     }
 }
 
-/// A host list that has run and waits to be used again, and the bytes of
-/// upload memory it keeps.
+/// A host list that has run and waits to be used again, the bytes of
+/// upload memory it keeps, and when it went idle ([`trim_idle`]).
 #[cfg(windows)]
-struct Idle(crate::host::HostList, u64);
+struct Idle(crate::host::HostList, u64, std::time::Instant);
 
 // SAFETY: D3D12 objects are free-threaded, and an idle list is touched by
 // nobody until it is taken out again.
@@ -249,13 +249,13 @@ fn fresh_list() -> Option<crate::host::HostList> {
     let idle = {
         let mut idle = IDLE.lock().unwrap_or_else(|e| e.into_inner());
         let taken = idle.0.pop();
-        if let Some(Idle(_, bytes)) = &taken {
+        if let Some(Idle(_, bytes, _)) = &taken {
             idle.1 -= bytes;
         }
         taken
     };
     match idle {
-        Some(Idle(list, _)) => Some(list),
+        Some(Idle(list, _, _)) => Some(list),
         None => crate::host::host().and_then(|h| h.new_list().ok()),
     }
 }
@@ -282,10 +282,61 @@ pub(crate) fn recycle(lists: Vec<Detached>, ran: &[usize]) {
         let bytes = host.scratch_kept();
         let mut idle = IDLE.lock().unwrap_or_else(|e| e.into_inner());
         if idle.0.len() < IDLE_MOST.0 && idle.1 + bytes <= IDLE_MOST.1 {
-            idle.0.push(Idle(host, bytes));
+            idle.0.push(Idle(host, bytes, std::time::Instant::now()));
             idle.1 += bytes;
         }
     }
+    // (let go outside the lock: a list's release is the kernel's work)
+    let gone = trim_idle(&mut IDLE.lock().unwrap_or_else(|e| e.into_inner()));
+    drop(gone);
+}
+
+/// Host lists left idle longer than `VICTORY_LIST_IDLE_MS` (5000; 0: never) are let go,
+/// beyond the `VICTORY_LIST_IDLE_KEEP` (64) most recently used; all beyond those while
+/// the system is short of memory ([`crate::residency::pressured`]). A list's two command
+/// allocators keep the most it ever recorded, and the pool, filled to [`IDLE_MOST`] in a
+/// burst (a scene loading), kept every one for the rest of the run. The steady frame
+/// takes lists back within milliseconds, so the ones left long are a burst's.
+#[cfg(windows)]
+fn trim_idle(idle: &mut (Vec<Idle>, u64)) -> Vec<Idle> {
+    static SET: std::sync::OnceLock<(u64, usize)> = std::sync::OnceLock::new();
+    let &(ms, keep) = SET.get_or_init(|| {
+        let n = |k: &str, d: u64| std::env::var(k).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(d);
+        (n("VICTORY_LIST_IDLE_MS", 5000), n("VICTORY_LIST_IDLE_KEEP", 64) as usize)
+    });
+    if ms == 0 || idle.0.len() <= keep {
+        return Vec::new();
+    }
+    // (pushed and popped at the end: the oldest are first)
+    let most = idle.0.len() - keep;
+    let n = if crate::residency::pressured() {
+        most
+    } else {
+        let long = std::time::Duration::from_millis(ms);
+        idle.0[..most].iter().take_while(|i| i.2.elapsed() > long).count()
+    };
+    let gone: Vec<Idle> = idle.0.drain(..n).collect();
+    for i in &gone {
+        idle.1 -= i.1;
+    }
+    TRIMMED.fetch_add(gone.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    gone
+}
+
+/// Host lists [`trim_idle`] let go, since the start.
+#[cfg(windows)]
+pub(crate) static TRIMMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Whether a submitted list is left without a host list until the title resets it
+/// (`VICTORY_LIST_LAZY=1`, off by default). It was given a new one at once, which waited
+/// there, its allocators made, until the title recorded into the list again, frames
+/// later: every list the title has held one for good (1,389 host lists alive in the opening
+/// cutscene, Series S). Taken at the reset instead, from the lists that have run, the host
+/// lists alive are about those recording or in flight.
+#[cfg(windows)]
+fn lazy() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_LIST_LAZY").is_some_and(|v| v == "1"))
 }
 
 /// A wait for a memory value recorded into list `this`, with waits cut
@@ -397,16 +448,22 @@ pub(crate) fn detach_parts(lists: &[This]) -> Parts {
             }
             continue;
         }
-        let Some(fresh) = fresh_list() else {
-            continue;
-        };
-        // A new host list is open; the title's next call on its list is a
-        // reset, which wants it closed.
-        fresh.close();
         // SAFETY: one of our lists, closed and submitted: nothing records
         // into it until the title resets it.
         let list = unsafe { &mut *this.cast_mut().cast::<List>() };
-        let Some(host) = list.host.replace(fresh) else {
+        let taken = if lazy() {
+            // (its reset takes one: [`reset`])
+            list.host.take()
+        } else {
+            let Some(fresh) = fresh_list() else {
+                continue;
+            };
+            // A new host list is open; the title's next call on its list is a
+            // reset, which wants it closed.
+            fresh.close();
+            list.host.replace(fresh)
+        };
+        let Some(host) = taken else {
             continue;
         };
         let earlier = std::mem::take(&mut list.earlier);
@@ -469,17 +526,27 @@ pub(crate) fn detach(lists: &[This]) -> (Vec<Detached>, Vec<usize>) {
             order.push(i);
             continue;
         }
-        let Some(fresh) = fresh_list() else {
-            continue;
+        let fresh = if lazy() {
+            // (its reset takes one: [`reset`])
+            None
+        } else {
+            let Some(fresh) = fresh_list() else {
+                continue;
+            };
+            // A new host list is open; the title's next call on its list is a
+            // reset, which wants it closed.
+            fresh.close();
+            Some(fresh)
         };
-        // A new host list is open; the title's next call on its list is a
-        // reset, which wants it closed.
-        fresh.close();
         let list = this.cast_mut().cast::<List>();
         // SAFETY: one of our lists, closed and submitted: nothing records
         // into it until the title resets it.
         let (host, uploads, state) = unsafe {
-            let Some(host) = (*list).host.replace(fresh) else {
+            let taken = match fresh {
+                Some(fresh) => (*list).host.replace(fresh),
+                None => (*list).host.take(),
+            };
+            let Some(host) = taken else {
                 continue;
             };
             let uploads =
@@ -679,9 +746,24 @@ extern "system" fn reset(this: This, allocator: This, pipeline: This) -> HRESULT
         list.earlier.clear();
         list.gate.clear();
     }
+    // A list left without a host list at its submission (`VICTORY_LIST_LAZY=1`) takes one
+    // now, open already: it is not reset again.
+    #[cfg(windows)]
+    let taken = {
+        // SAFETY: as above.
+        let list = unsafe { &mut *this.cast_mut().cast::<List>() };
+        if list.host.is_none() {
+            list.host = fresh_list();
+            true
+        } else {
+            false
+        }
+    };
     #[cfg(windows)]
     with_state(this, |host, state| {
-        host.reset();
+        if !taken {
+            host.reset();
+        }
         state.reset(pipeline);
     });
     crate::pipeline::bound(pipeline);
