@@ -87,7 +87,12 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
    of the cutscene, frames of 2-7 s. Host copies of title memory 3.9 GB (2.8 GB
    "windows" outside buffers), shared buffers 4.1 GB, host textures 5.2 GB. First
    lever: `VICTORY_INPLACE=1` (windows opened in place, no copy: less memory, less
-   watching and copying). Series S profile.
+   watching and copying) **does not work on this PC**: opening title memory in
+   place needs `ID3D12Device13` (`OpenExistingHeapFromAddress1`), which Windows 11
+   build 22000 (21H2) does not have (0x80004002, every window copied). A newer
+   Windows 11 (22H2+) would allow it. At a run's start only ~8 GB is free (Windows
+   and other apps hold the rest); the game reaches 19 GB private even on Series S,
+   so frames swing 0.2-1.8 s with paging and run-to-run comparisons are noisy.
 3. **CPU: preparing 140-350 ms a frame**, of it copies 40-120 ms (~100 MB),
    refreshes ~130 ms (4,346 of 5,302 known to copy nothing), copy-back 60-100 ms.
 4. **Pair meetings hang the card** (opt-in now): re-test 1004's uniform wait with
@@ -100,7 +105,9 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
 ## Plans (in order)
 
 1. Build 1005 (pair meetings opt-in), tests, retranslate, `warm --used --jobs 4`.
-2. Series S run, then the same with `VICTORY_INPLACE=1`: memory and watch time.
+2. Memory first (it makes every other number noise here): find what of the 19 GB
+   is ours and can go (host copies 3.6 GB, shared buffers 5 GB made, upload buffers
+   3.1 GB made, lists' growth 2.7 GB, host textures 5.2 GB).
 3. Guard pages for rarely written private memory (issue 1): the biggest CPU cost.
 4. Refresh overhead for refreshes known to copy nothing (issue 3).
 5. Re-test pair meetings (1004's uniform wait), short Series S run; then the builder
@@ -131,3 +138,5 @@ a time, use `warm --jobs 4`, and do not build while a run is going (RAM).
 | 2026-11-26 | 1002 (pair meet on), Series X | world load | card hung at 72 s; 19.8 GB private, 1.9 GB free |
 | 2026-11-26 | 1002, Series S | world load | card hung at 62 s (scattering_transmittance_system) |
 | 2026-11-26 | 1003, Series S, `VICTORY_PAIR_MEET=0` | opening cutscene | lit; 2-3.5 fps, preparing 140-350 ms, watch 20-790 ms, 19-21 GB private |
+| 2026-11-26 | 1005, Series S | opening cutscene | stable; median 336 ms (3.0 fps), best 206; preparing median 240 ms; 19.0 GB private, 22 MB free at worst |
+| 2026-11-26 | 1005, Series S, `VICTORY_INPLACE=1` | opening cutscene | in place refused (no ID3D12Device13 on build 22000); median 758 ms, paging (15 MB free) |

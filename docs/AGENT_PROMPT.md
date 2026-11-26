@@ -34,7 +34,7 @@ Belobug, DexNom and our own. Machine: i5-11400F, 24 GB RAM, RTX 3060 12 GB.
   followed by a bugcheck 0x119 on the user's PC. Anything that can spin or wait on
   the GPU is opt-in until a short run shows it holds; runs are short; one change
   at a time; `warm --jobs 4`; nothing heavy (builds) while a run is going.
-- - **Update `docs/STATUS.md`** whenever something changes: a fix, a measurement,
+- **Update `docs/STATUS.md`** whenever something changes: a fix, a measurement,
   a new issue, a changed plan. Keep it short and current.
 
 ## Layout and commands
