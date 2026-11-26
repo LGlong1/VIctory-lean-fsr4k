@@ -23,8 +23,16 @@ $settings = @{
     # by default upstream): residency budgets for limited RAM, fallback heaps, the heap
     # buffer pass per heap, XMA voices refilled.
     VICTORY_RESIDENCY = '1'; VICTORY_FALLBACK_HEAPS = '1'; VICTORY_SWEEP_PER_HEAP = '1'; VICTORY_XMA_REFILL = '1'
+    # Measured best on the RTX 3060 / 24 GB PC (docs/STATUS.md, 2026-11-26): the page pool
+    # committed and what of it can be read in place (any Windows 10+), avatarmanz's renderer
+    # patches 1, 2, 5, 6, 7, and host lists taken only at the title's reset. 2.8 -> 4.1 fps
+    # median in the opening cutscene (Series S), ~0.75 GB less private memory.
+    VICTORY_POOL_COMMIT = '1'; VICTORY_INPLACE = '1'; VICTORY_LIST_LAZY = '1'
+    VICTORY_PORT_CONSTANTS = '1'; VICTORY_PORT_DESCRIPTORS = '1'; VICTORY_PORT_CBV = '1'
+    VICTORY_PORT_GUARD = '1'; VICTORY_PORT_JOURNAL = '1'
 }
 if ($Safe) {
+    foreach ($k in 'VICTORY_POOL_COMMIT', 'VICTORY_INPLACE', 'VICTORY_LIST_LAZY', 'VICTORY_PORT_CONSTANTS', 'VICTORY_PORT_DESCRIPTORS', 'VICTORY_PORT_CBV', 'VICTORY_PORT_GUARD', 'VICTORY_PORT_JOURNAL') { $settings.Remove($k) }
     $settings.VICTORY_UNDER_WIDE = '0'; $settings.VICTORY_LAND_ECHO = '0'
 } else {
     $settings.VICTORY_THIN = '1'; $settings.VICTORY_JOIN_PARTS = '8'; $settings.VICTORY_UPLOAD_AHEAD = '1'

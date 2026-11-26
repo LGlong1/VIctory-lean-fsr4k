@@ -160,6 +160,11 @@ Targets: (1) scattered windows (a placed buffer per run, or the
 
 ## Unattended runs
 
+Runs since the avatarmanz merge ended at 77-103 s with `window closed` in the log:
+that line is written only for a user close (close button, Alt+F4, taskbar or window
+menu: `WM_SYSCOMMAND SC_CLOSE`), not by the runtime. Leave the window alone during a
+run, or find what on the PC sends it.
+
 `scripts\autotest.ps1 -Exe <game>\game_scarlett_master.exe -Name <name> [-Seconds 300]
 [-SceneLines 10] [-Console series-s] [-RayTracing] [-More @{...}]`: starts the title
 with play.ps1's settings, presses Enter every 5 s from 15 s to 4 min (`VICTORY_KEYS`),
@@ -189,4 +194,5 @@ a time, use `warm --jobs 4`, and do not build while a run is going (RAM).
 | 2026-11-26 | 1006 merge, Series S, ports 1,2,5,6,7 | opening cutscene | median 362 ms (2.8 fps); port 1 and 5 nothing (no Device13) |
 | 2026-11-26 | + `VICTORY_POOL_COMMIT=1 VICTORY_INPLACE=1` | opening cutscene | **median 245 ms (4.1 fps), best 136 ms (7.3)**; 19 windows in place; 19.3 GB |
 | 2026-11-26 | + port 1 through the section | opening cutscene | median 244 ms (4.1 fps), best 202; port 1: 185 MB in place; watch 14-26 ms (was up to 1,170); 18.6 GB |
+| 2026-11-26 | same, again (window closed at 78 s) | opening cutscene | host lists 764-861; 16.83 GB peak; 261 ms median. **This set is play.ps1's default now** (`-Safe` drops it) |
 | 2026-11-26 | + `VICTORY_LIST_LAZY=1`, idle trimming | opening cutscene (short: window closed at 77 s) | host lists alive 853-977 (was 1,349); 0.5-0.75 GB less private at the same point; 254 ms median (noise) |
