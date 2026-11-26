@@ -5931,6 +5931,23 @@ impl Host {
             return String::new();
         };
         let mut text = String::new();
+        // The runtime's own class of the removal, even with no fault
+        // address (after fxceless f9fdf19, fork PR #1214).
+        match dred.cast::<ID3D12DeviceRemovedExtendedData2>() {
+            Ok(dred2) => {
+                // SAFETY: a query on the live DRED interface.
+                let state = unsafe { dred2.GetDeviceState() };
+                let name = match state {
+                    D3D12_DRED_DEVICE_STATE_HUNG => "hung",
+                    D3D12_DRED_DEVICE_STATE_FAULT => "fault",
+                    D3D12_DRED_DEVICE_STATE_PAGEFAULT => "page fault",
+                    D3D12_DRED_DEVICE_STATE_UNKNOWN => "unknown",
+                    _ => "unrecognized",
+                };
+                text.push_str(&format!("; DRED device state {name} ({})", state.0));
+            }
+            Err(e) => text.push_str(&format!("; DRED device state unavailable ({:#010X})", e.code().0)),
+        }
         let mut fault_va = None;
         // SAFETY: the outputs are the runtime's, valid while the device
         // lives; nodes are walked as linked, histories have their counts.
