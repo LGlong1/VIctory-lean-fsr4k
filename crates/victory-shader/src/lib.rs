@@ -29,8 +29,8 @@ pub mod structure;
 ///
 /// The NVIDIA fork counts from 1001 so its versions never meet avatarmanz's
 /// (1 there): 1001 is the pair meetings of console wave64 programs on 32-lane
-/// hosts.
-pub const TRANSLATOR_VERSION: u32 = 1001;
+/// hosts; 1002 adds cool_fox 8cc31ab's lane-uniform and restored-lane analysis.
+pub const TRANSLATOR_VERSION: u32 = 1002;
 
 pub use dxbc::{Container, FourCC, Part};
 pub use dxil::{DxilProgram, ShaderKind, XboxExtras};
