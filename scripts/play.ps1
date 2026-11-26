@@ -5,6 +5,7 @@
 # -Build        target\diag (the default, the build all measurements are of) or target\release
 # -More         other settings: -More @{VICTORY_PANEL='1'}
 # -Console      series-x (the default) or series-s (the smaller console: less memory, a lower resolution)
+# -NoAgility    the D3D12 runtime in Windows instead of the Agility SDK's (apps/victory/src/agility.rs)
 # Run it from a normal window, not as administrator: the driver then keeps its shader cache elsewhere.
 param(
     [Parameter(Mandatory)][string]$Exe,
@@ -12,7 +13,8 @@ param(
     [switch]$RayTracing,
     [ValidateSet('diag', 'release')][string]$Build = 'diag',
     [hashtable]$More = @{},
-    [ValidateSet('series-x', 'series-s')][string]$Console = 'series-x'
+    [ValidateSet('series-x', 'series-s')][string]$Console = 'series-x',
+    [switch]$NoAgility
 )
 $settings = @{
     VICTORY_TEXTURE_NO_WAIT = '1'; VICTORY_RELAY = '2'; VICTORY_WIDE_BACK = '1'; VICTORY_CARD_REHASH_RUNS = '1'
@@ -59,5 +61,22 @@ if ($discarded) {
     Write-Host "Discarded inherited values for $($discarded.Name -join ', '). Use -More to pass them explicitly."
 }
 $Exe = (Resolve-Path $Exe).Path
+# The D3D12 Agility SDK (apps/victory/src/agility.rs): Microsoft's runtime next to
+# victory.exe gives ID3D12Device13 on Windows 11 21H2 (title memory in place without
+# section heaps). Its DLLs are not in the repository: VICTORY_AGILITY_DIR (default
+# victory-data\agility\1.620.2) is copied into target\<build>\D3D12\. -NoAgility removes
+# that folder: the runtime in Windows is used again.
+$sdkDir = Join-Path (Split-Path $victory) 'D3D12'
+if ($NoAgility) {
+    if (Test-Path $sdkDir) { Remove-Item -Recurse -Force $sdkDir }
+} else {
+    $sdkFrom = if ($env:VICTORY_AGILITY_DIR) { $env:VICTORY_AGILITY_DIR } else { 'E:\Dev\victory-data\agility\1.620.2' }
+    if (Test-Path (Join-Path $sdkFrom 'D3D12Core.dll')) {
+        New-Item -ItemType Directory -Force $sdkDir | Out-Null
+        Copy-Item (Join-Path $sdkFrom '*.dll') $sdkDir -Force
+    } else {
+        Write-Host "No Agility SDK in ${sdkFrom}: the D3D12 runtime in Windows is used."
+    }
+}
 Push-Location (Join-Path $PSScriptRoot '..')   # victory.toml is looked for here
 try { & $victory run $Exe --console $Console --execute } finally { Pop-Location }

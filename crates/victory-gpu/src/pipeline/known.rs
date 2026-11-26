@@ -247,12 +247,17 @@ pub fn keys(dir: &Path) -> Vec<String> {
 }
 
 /// What a driver's cached pipelines depend on besides the title's: the
-/// translator with its settings, and the driver.
+/// translator with its settings, the driver, and the D3D12 runtime (the Agility
+/// SDK's beside the executable or the one in Windows: the driver's cache of one is
+/// not found by the other, so `warm` makes them again for it).
 pub fn fingerprint() -> String {
     let mut h = blake3::Hasher::new();
     h.update(&crate::shader_cache::translation());
     if let Some(host) = crate::host::host() {
         h.update(&host.driver().to_le_bytes());
+    }
+    if super::library::agility() {
+        h.update(b"d3d12 agility");
     }
     h.finalize().to_hex()[..16].to_owned()
 }
