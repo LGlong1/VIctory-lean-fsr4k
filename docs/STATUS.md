@@ -131,7 +131,12 @@ GPU reads them over PCIe anyway), command-list growth 2.8-3.3 GB, our Rust heap
 1.5 GB, texture copies ~3.5 GB **in VRAM** (pool heaps are DEFAULT: not RAM). The
 title's own share is roughly 6-7 GB. Of ~800 windows a frame, only ~19 (88 MB)
 are one run of the pool: the rest are scattered over several views and still
-copied. Targets: (1) scattered windows (a placed buffer per run, or the
+copied. Command lists: `VICTORY_LIST_LAZY=1` (34015389) leaves a submitted list without a host
+list until its reset, and the idle pool lets go of lists idle > 5 s beyond 64: 1,349 ->
+~900 alive, ~0.5-0.75 GB. What is left is lists recording or in flight at once, each two
+allocators that keep the most they ever recorded. Next there: let go of a list whose
+allocators grew past a size instead of pooling it; share preludes.
+Targets: (1) scattered windows (a placed buffer per run, or the
 64 KiB-directory addressing the ray-tracing path uses), (2) command-list growth,
 (3) the Rust heap.
 
@@ -184,3 +189,4 @@ a time, use `warm --jobs 4`, and do not build while a run is going (RAM).
 | 2026-11-26 | 1006 merge, Series S, ports 1,2,5,6,7 | opening cutscene | median 362 ms (2.8 fps); port 1 and 5 nothing (no Device13) |
 | 2026-11-26 | + `VICTORY_POOL_COMMIT=1 VICTORY_INPLACE=1` | opening cutscene | **median 245 ms (4.1 fps), best 136 ms (7.3)**; 19 windows in place; 19.3 GB |
 | 2026-11-26 | + port 1 through the section | opening cutscene | median 244 ms (4.1 fps), best 202; port 1: 185 MB in place; watch 14-26 ms (was up to 1,170); 18.6 GB |
+| 2026-11-26 | + `VICTORY_LIST_LAZY=1`, idle trimming | opening cutscene (short: window closed at 77 s) | host lists alive 853-977 (was 1,349); 0.5-0.75 GB less private at the same point; 254 ms median (noise) |
