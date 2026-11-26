@@ -2036,6 +2036,33 @@ pub(crate) mod tests {
                 CloseHandle(handle);
                 return;
             }
+            // `file`: a section of a file (`VICTORY_LEAK_FILE`), opened as a heap, let go cleanly
+            if end == "file" {
+                use std::os::windows::fs::OpenOptionsExt;
+                use std::os::windows::io::AsRawHandle;
+                let path = std::env::var("VICTORY_LEAK_FILE").unwrap();
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .attributes(0x100) // FILE_ATTRIBUTE_TEMPORARY
+                    .open(&path)
+                    .unwrap();
+                file.set_len(size).unwrap();
+                let fh = file.as_raw_handle();
+                let section = CreateFileMappingW(fh, std::ptr::null(), mem::PAGE_READWRITE, (size >> 32) as u32, size as u32, std::ptr::null());
+                assert!(!section.is_null(), "{}", std::io::Error::last_os_error());
+                let heap = open(&device, From::Section(section as usize)).unwrap_or_else(|e| panic!("not opened: {e:?}"));
+                let buffer = place(&device, &heap, 0, 64 << 20).unwrap();
+                eprintln!("placed; ending: file");
+                drop((buffer, heap));
+                drop(device);
+                CloseHandle(section);
+                drop(file);
+                CloseHandle(handle);
+                return;
+            }
             // `none`: the section only, never opened as a heap (the control)
             if end == "none" {
                 std::ptr::write_bytes(

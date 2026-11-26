@@ -116,6 +116,10 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
    **Next:** a way to read view memory in place without a section heap (e.g. map the pool's
    views from a committed allocation opened whole), and the cost of losing it (fps, memory).
    Device13's `OpenExistingHeapFromAddress1` is untested (not on build 22000).
+   Tried (2026-11-26): a file-backed section (`VICTORY_LEAK_END=file`, a temporary file on
+   E:) is refused by `OpenExistingHeapFromFileMapping`: not a way around the leak. Ideas left:
+   exact-size copies instead of 4 MiB cells for view memory (the 2 GB is window copies);
+   only pagefile sections open as heaps, so in place needs another opening.
 
 1. **CPU: write-watch askings.** The game writes ~2,200 pages (9 MB) a frame; to find
    them the runtime asks Windows about 1.2 GB (`GetWriteWatch`, ~61-180 ns a page):
