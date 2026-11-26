@@ -5509,6 +5509,22 @@ pub(crate) fn by_address(start: u64, len: u64) -> Option<Arc<Shadow>> {
 /// Copies of title memory outside buffers, by (start, length).
 static LOOSE: std::sync::RwLock<BTreeMap<(u64, u64), Arc<Shadow>>> = std::sync::RwLock::new(BTreeMap::new());
 
+/// Whether an ask of title memory outside buffers with a length first tries a window of just
+/// what it asks, on 64 KiB lines, in place (`VICTORY_WINDOW_EXACT=1`, off by default; needs
+/// `VICTORY_INPLACE=1` and the page pool committed, `VICTORY_POOL_COMMIT=1`). The title maps
+/// its streaming memory 64 KiB page by page into large reservations, mostly in its section's
+/// order but with gaps: of the 4 MiB cells windows are cut on (`window`), 517 of 548 were not
+/// one run of the pool (2.26 GB copied), while what an ask names nearly always is. Such a
+/// window costs no memory, no refresh and no copy-back; asks it cannot serve take the cell as
+/// before.
+fn exact_windows() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_WINDOW_EXACT").is_some_and(|v| v == "1"))
+}
+
+/// Exact windows placed in place ([`exact_windows`]), since the start.
+pub(crate) static EXACT_WINDOWS: AtomicU64 = AtomicU64::new(0);
+
 fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Shadow>> {
     let (cell, _) = window_of(address, end, WINDOW);
     let named = window_of(address, end, if unsized_ask { WINDOW } else { window() });
@@ -5529,6 +5545,17 @@ fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Sha
             shadow.unsized_asks.fetch_add(1, Ordering::Relaxed);
         }
     };
+    // Just what is asked, in place (`exact_windows`): found again by the same lines.
+    let exact = (!unsized_ask && exact_windows()).then(|| {
+        let at = address & !0xffff;
+        (at, end.next_multiple_of(0x10000) - at)
+    });
+    if let Some(key) = exact
+        && let Some(shadow) = LOOSE.read().unwrap_or_else(|e| e.into_inner()).get(&key)
+    {
+        note(shadow);
+        return Some(shadow.clone());
+    }
     // The window is there already (nearly always): readers share the lock.
     if !(unsized_ask && tails()) && !(any && fine() && !unsized_ask) {
         let map = LOOSE.read().unwrap_or_else(|e| e.into_inner());
@@ -5538,6 +5565,19 @@ fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Sha
         }
     }
     let mut map = LOOSE.write().unwrap_or_else(|e| e.into_inner());
+    if let Some(key) = exact {
+        if let Some(shadow) = map.get(&key) {
+            note(shadow);
+            return Some(shadow.clone());
+        }
+        if let Some(placed) = crate::inplace::place_if_run(key.0, key.1) {
+            let shadow = Arc::new(Shadow::placed(placed, key.0, key.1, true));
+            note(&shadow);
+            map.insert(key, shadow.clone());
+            EXACT_WINDOWS.fetch_add(1, Ordering::Relaxed);
+            return Some(shadow);
+        }
+    }
     let (start, len) = if unsized_ask && tails() {
         let there = map.range((cell, 0)..=(address, u64::MAX)).map(|(key, _)| *key);
         longest_tail(there, address, end).unwrap_or_else(|| tail_of(address, end))

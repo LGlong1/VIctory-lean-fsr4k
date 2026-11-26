@@ -136,6 +136,11 @@ list until its reset, and the idle pool lets go of lists idle > 5 s beyond 64: 1
 ~900 alive, ~0.5-0.75 GB. What is left is lists recording or in flight at once, each two
 allocators that keep the most they ever recorded. Next there: let go of a list whose
 allocators grew past a size instead of pooling it; share preludes.
+Windows: the copied ones were 4 MiB grid cells over streaming memory the title maps 64 KiB
+page by page (517 of 548 cells "with holes", 31 scattered), while what an ask names is nearly
+always one run of the pool. `VICTORY_WINDOW_EXACT=1` places just the asked range (64 KiB lines)
+in place first. Left: asks with no length (cells, ~1.6 GB "without a length") and truly
+scattered ones.
 Targets: (1) scattered windows (a placed buffer per run, or the
 64 KiB-directory addressing the ray-tracing path uses), (2) command-list growth,
 (3) the Rust heap.
@@ -195,5 +200,6 @@ a time, use `warm --jobs 4`, and do not build while a run is going (RAM).
 | 2026-11-26 | 1006 merge, Series S, ports 1,2,5,6,7 | opening cutscene | median 362 ms (2.8 fps); port 1 and 5 nothing (no Device13) |
 | 2026-11-26 | + `VICTORY_POOL_COMMIT=1 VICTORY_INPLACE=1` | opening cutscene | **median 245 ms (4.1 fps), best 136 ms (7.3)**; 19 windows in place; 19.3 GB |
 | 2026-11-26 | + port 1 through the section | opening cutscene | median 244 ms (4.1 fps), best 202; port 1: 185 MB in place; watch 14-26 ms (was up to 1,170); 18.6 GB |
+| 2026-11-26 | + `VICTORY_WINDOW_EXACT=1` (now default) | opening cutscene, 10 lines | 3,098 windows (350 MB) in place (was 20, 96 MB); window copies 2.9 GB (was 3.4-3.8); **~1 GB less private** at the same points (13.8-16.9 vs 14.9-17.9 GB); 240 ms median (4.2 fps), best 136; preparing 126 ms median; frames clean |
 | 2026-11-26 | same, again (window closed at 78 s) | opening cutscene | host lists 764-861; 16.83 GB peak; 261 ms median. **This set is play.ps1's default now** (`-Safe` drops it) |
 | 2026-11-26 | + `VICTORY_LIST_LAZY=1`, idle trimming | opening cutscene (short: window closed at 77 s) | host lists alive 853-977 (was 1,349); 0.5-0.75 GB less private at the same point; 254 ms median (noise) |

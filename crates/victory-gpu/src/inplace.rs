@@ -155,6 +155,60 @@ fn place_in(device: &ID3D12Device, how: Opening, start: u64, len: u64) -> Result
     }
 }
 
+/// Title view memory `[start, start + len)` in place if it is one run of a committed section
+/// ([`place_in_section`]) and in-place windows are on; `None` otherwise, said nowhere and not
+/// counted as turned down: the caller has another form to try (`crate::shadow`'s exact
+/// windows, `VICTORY_WINDOW_EXACT`).
+pub(crate) fn place_if_run(start: u64, len: u64) -> Option<Placed> {
+    if level() < 1 || STATS[1].load(Ordering::Relaxed) + STATS[3].load(Ordering::Relaxed) + len > most() {
+        return None;
+    }
+    let Cover::Run(section, offset) = cover(start as usize, len as usize) else {
+        return None;
+    };
+    let host = crate::host::host()?;
+    let placed = place_in_section(&host.device, section, offset, len).ok()?;
+    STATS[0].fetch_add(1, Ordering::Relaxed);
+    STATS[1].fetch_add(len, Ordering::Relaxed);
+    Some(placed)
+}
+
+/// View memory turned down for not being one run of a section, since the start: windows
+/// and bytes that are scattered (views of several places), then those with holes.
+pub(crate) static TURNED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+/// Notes view memory turned down ([`TURNED`]), and says the first few: where, how big,
+/// over how many views, and the reservation-relative place of each view's section offset,
+/// so that a run tells whether the pages are mapped once in another order (which an order
+/// of the section's slices could undo) or come and go (streaming).
+fn turned_down(shown: Cover, at: usize, len: usize) {
+    let i = if shown == Cover::Holes { 2 } else { 0 };
+    TURNED[i].fetch_add(1, Ordering::Relaxed);
+    TURNED[i + 1].fetch_add(len as u64, Ordering::Relaxed);
+    static SAID: AtomicU64 = AtomicU64::new(0);
+    if SAID.fetch_add(1, Ordering::Relaxed) >= 40 {
+        return;
+    }
+    let v = views();
+    let end = at + len.max(1);
+    let shown_by: Vec<String> = v
+        .views
+        .range(..end)
+        .rev()
+        .take_while(|(base, view)| *base + view.0 > at)
+        .take(8)
+        .map(|(base, (bytes, section, offset))| format!("{base:#x}+{bytes:#x}=s{section:#x}@{offset:#x}"))
+        .collect();
+    tracing::info!(
+        kind = ?shown,
+        at = format_args!("{at:#x}"),
+        len,
+        views = shown_by.len(),
+        shown_by = ?shown_by,
+        "title view memory not one run of a section: copied"
+    );
+}
+
 /// Title memory that is one run of a section's pages (`bytes` from `offset` of section
 /// `handle`), placed in the section opened as a heap (`OpenExistingHeapFromFileMapping`,
 /// `ID3D12Device3`: Windows 10 and later), if the section was made committed whole (the
@@ -366,6 +420,7 @@ pub(crate) fn place_for(start: u64, len: u64, window: bool) -> Option<Placed> {
     if shown != Cover::None {
         let Cover::Run(section, offset) = shown else {
             STATS[4].fetch_add(1, Ordering::Relaxed);
+            turned_down(shown, start as usize, len as usize);
             return None;
         };
         if STATS[1].load(Ordering::Relaxed) + STATS[3].load(Ordering::Relaxed) + len > most() {
@@ -461,7 +516,7 @@ fn say() {
     let s: Vec<u64> = STATS.iter().map(|s| s.load(Ordering::Relaxed)).collect();
     tracing::info!(
         "title memory in place: {} windows {} MB, {} title buffers {} MB (no copy, no refresh, no copy-back); turned down: {} view memory or not private memory committed whole, \
-         {} refused by the host, {} over VICTORY_INPLACE_MB; {} let go because their memory changed",
+         {} refused by the host, {} over VICTORY_INPLACE_MB; {} let go because their memory changed; view memory not one run: {} scattered {} MB, {} with holes {} MB",
         s[0],
         s[1] >> 20,
         s[2],
@@ -469,7 +524,11 @@ fn say() {
         s[4],
         s[5],
         s[6],
-        s[7]
+        s[7],
+        TURNED[0].load(Ordering::Relaxed),
+        TURNED[1].load(Ordering::Relaxed) >> 20,
+        TURNED[2].load(Ordering::Relaxed),
+        TURNED[3].load(Ordering::Relaxed) >> 20
     );
 }
 
