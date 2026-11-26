@@ -95,6 +95,22 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
 
 ## Open issues (most important first)
 
+0. **Commit leaked outside the game (2026-11-26, suspected committed pool).** After a day of
+   runs, ~50 GB of the PC's commit stayed in use with no game running (processes' private
+   bytes summed to 10.9 GB, kernel pools ~2 GB; commit 60.8 of 74 GB, peak at the limit).
+   The run `s-bigtrace-1126-130747` then died at 57 s on `memory allocation of 12582912
+   bytes failed` (E_OUTOFMEMORY on shared/upload buffers just before), the screen flashed,
+   and Windows grew the system-managed pagefile to 54 GB, leaving C: with 74 MB. No display
+   driver reset in the event log. About eight times the 6.1 GiB title pool: the suspect is
+   `VICTORY_POOL_COMMIT=1` with the section opened as a D3D12 heap
+   (`OpenExistingHeapFromFileMapping`), the driver keeping it after the process ends.
+   **Done:** play.ps1 no longer sets `VICTORY_POOL_COMMIT` by default. **Next, after a
+   reboot:** run the ignored test `inplace::tests::card_section_heap_after_the_process`
+   (1 GiB section on the card) with `VICTORY_LEAK_END=clean|exit|abort`, reading system
+   commit (GetPerformanceInfo) before and after each; if commit does not come back, keep
+   the committed pool off (or close the heap before exit, or open view memory per view).
+   Check commit before long sessions: `C:\pagefile.sys` growing means it is leaking again.
+
 1. **CPU: write-watch askings.** The game writes ~2,200 pages (9 MB) a frame; to find
    them the runtime asks Windows about 1.2 GB (`GetWriteWatch`, ~61-180 ns a page):
    **73-790 ms a frame** ("watch(ms)" in run summaries). Fix: guard pages (read-only,
@@ -125,6 +141,13 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
    ("no wave32 lowering"), the builder's 9.
 
 ## Memory (Series S cutscene, `VICTORY_MEMORY_CATEGORIES=1`, overlapping)
+
+Who owns our two largest heap blocks (`VICTORY_BIG_TRACE=1` logs the call stack of each block
+of 32 MB or more): the 251.63 MB one is the title's audio processor heap
+(`audio::ApuAlloc` -> `heap_alloc`), the 82.06 MB one title memory for a committed resource
+(`xmem::XMemAllocDefault` via `resource::Memory::for_resource`). Both are the title's asks,
+not ours. Of the rest: 19,126 shader containers (189 MB) are kept, of which only 2,349 are
+ever translated.
 
 Private ~18.6 GB on a 24 GB PC: title window copies 3.8 GB (in PC memory; the
 GPU reads them over PCIe anyway), command-list growth 2.8-3.3 GB, our Rust heap

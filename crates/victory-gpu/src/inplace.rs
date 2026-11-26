@@ -1974,4 +1974,39 @@ pub(crate) mod tests {
             mem::VirtualFree(base as *mut c_void, 0, mem::MEM_RELEASE);
         }
     }
+
+    /// On the PC's own card, ignored unless asked for: a 1 GiB committed section opened as a
+    /// heap with a buffer placed in it, and the process then ends as `VICTORY_LEAK_END` says
+    /// (`clean`: everything let go first; `exit`: `process::exit` with all of it held;
+    /// `abort`: as a failed allocation ends the process). The caller compares the system's
+    /// commit before and after: whether the driver keeps the section after its process.
+    #[test]
+    #[ignore]
+    fn card_section_heap_after_the_process() {
+        use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_12_0;
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Memory::{CreateFileMappingW, SEC_COMMIT};
+        let end = std::env::var("VICTORY_LEAK_END").unwrap_or_else(|_| "clean".into());
+        // SAFETY: a device on the default adapter and a section of the test's own; no shader runs.
+        unsafe {
+            let mut device: Option<ID3D12Device> = None;
+            D3D12CreateDevice(None, D3D_FEATURE_LEVEL_12_0, &mut device).unwrap();
+            let device = device.unwrap();
+            let size: u64 = 1 << 30;
+            let handle = CreateFileMappingW(INVALID_HANDLE_VALUE, std::ptr::null(), mem::PAGE_READWRITE | SEC_COMMIT, (size >> 32) as u32, size as u32, std::ptr::null());
+            assert!(!handle.is_null());
+            title_memory_section(handle as usize, size, true);
+            let placed = place_in_section(&device, handle as usize, 0, 64 << 20).unwrap_or_else(|e| panic!("not placed: {e:?}"));
+            eprintln!("placed; ending: {end}");
+            match end.as_str() {
+                "exit" => std::process::exit(0),
+                "abort" => std::process::abort(),
+                _ => {}
+            }
+            drop(placed);
+            title_memory_section_gone(handle as usize);
+            CloseHandle(handle);
+            drop(device);
+        }
+    }
 }

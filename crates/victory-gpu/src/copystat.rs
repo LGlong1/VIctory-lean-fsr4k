@@ -421,6 +421,7 @@ fn big(at: *mut u8, size: usize, made: bool) {
         if made {
             if place.compare_exchange(0, at as usize, Relaxed, Relaxed).is_ok() {
                 bytes.store(size as u64, Relaxed);
+                trace_big(at as usize, size);
                 return;
             }
         } else if place.load(Relaxed) == at as usize {
@@ -428,6 +429,63 @@ fn big(at: *mut u8, size: usize, made: bool) {
             place.store(0, Relaxed);
             return;
         }
+    }
+}
+
+/// Where each big block alive was made (`VICTORY_BIG_TRACE=1`, off by default): its place,
+/// bytes and the call stack, unresolved until it is said ([`say_big_traces`]).
+static BIG_TRACES: Mutex<Vec<(usize, usize, std::backtrace::Backtrace)>> = Mutex::new(Vec::new());
+
+fn big_trace_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_BIG_TRACE").is_some_and(|v| v == "1"))
+}
+
+/// Keeps the call stack of a big block just made (the allocations this makes are small:
+/// they come back here no further than [`big`]'s size check).
+fn trace_big(at: usize, size: usize) {
+    thread_local! {
+        static IN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if !big_trace_on() || IN.with(|i| i.replace(true)) {
+        return;
+    }
+    let trace = std::backtrace::Backtrace::force_capture();
+    if let Ok(mut traces) = BIG_TRACES.try_lock() {
+        traces.retain(|(place, _, _)| *place != at);
+        if traces.len() < 64 {
+            traces.push((at, size, trace));
+        }
+    }
+    IN.with(|i| i.set(false));
+}
+
+/// Says, once each, where the big blocks alive now were made: the frames of our own crates.
+fn say_big_traces() {
+    if !big_trace_on() {
+        return;
+    }
+    static SAID: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    let alive: Vec<usize> = BIG_AT.iter().map(|p| p.load(Relaxed)).filter(|&p| p != 0).collect();
+    let traces = BIG_TRACES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
+    for (at, size, trace) in traces.iter() {
+        if !alive.contains(at) || said.contains(at) {
+            continue;
+        }
+        said.push(*at);
+        let text = trace.to_string();
+        let ours: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.contains("victory") && !l.contains("copystat"))
+            .take(24)
+            .collect();
+        tracing::info!(
+            "our own big block of {:.2} MB at {at:#x} was made at: {}",
+            *size as f64 / (1 << 20) as f64,
+            ours.join(" <- ")
+        );
     }
 }
 
@@ -1007,6 +1065,7 @@ fn log_memory() {
         mb(kept[6]),
         big_blocks(),
     );
+    say_big_traces();
     // Round 3: whether windows hold the same memory more than once (they
     // can, once they are cut finer than 4 MiB), and how many host lists
     // the title made and never used.
