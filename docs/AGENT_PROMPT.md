@@ -45,8 +45,15 @@ Belobug, DexNom and our own. Machine: i5-11400F, 24 GB RAM, RTX 3060 12 GB.
 
 ## Layout and commands
 
-- Work in `E:\Dev\VIctory-merge` (branch `merge/fxceless`), then
-  `git -C E:\Dev\VIctory-NV merge --ff-only merge/fxceless` to update `nvidia`.
+- Work in `E:\Dev\VIctory-avatar2` (branch `try/avatar2`), then
+  `git -C E:\Dev\VIctory-NV merge --ff-only try/avatar2` to update `nvidia`, and
+  `git -C E:\Dev\VIctory-NV push mine nvidia:main` to ship it to
+  github.com/HypeLobbiesHD/VIctory-RTX3060 (public: the asset policy matters doubly).
+- **RT off is the current target** (no `-RayTracing`): a stable 30 fps at 8-10 GB private.
+- After a change of D3D12 runtime or driver: `warm --used --jobs 4`, then a long run to
+  fill the pipeline library (`host-pipelines-agility.bin`) before measuring anything.
+- Measure A/B as alternating pairs (A B A B) with the user's other programs closed: one run
+  per setting swings 2-4x with paging on this 24 GB PC.
 - PowerShell: `$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"` first.
 - Build: `cargo build --locked --profile diag -p victory --features diagnostics`
   (a running `victory.exe` locks the binary: build when nothing runs).

@@ -5,7 +5,7 @@ The living record of this fork: where it stands, what is broken, what is next.
 changes** (a fix lands, a run is measured, a plan changes). Newest facts win;
 old ones are corrected, not left beside the new.
 
-Last updated: 2026-11-26 (session 1, after the 0x119 reboot).
+Last updated: 2026-11-26 (session 2: Agility SDK, card buffers, PR review, repo HypeLobbiesHD/VIctory-RTX3060).
 
 ## Goal
 
@@ -15,17 +15,28 @@ native Windows/D3D12), competitive on the PortWatch VI tracker
 Target machine: i5-11400F (6 cores / 12 threads), 24 GB RAM, RTX 3060 12 GB,
 Windows 11 22000. Title dump: Series v1.0.2.1, the user's own.
 
+**Current target (user, 2026-11-26): ray tracing OFF (no `-RayTracing`, no
+`VICTORY_BVH_BUILDER`), a stable 30 fps (33 ms), at 8-10 GB private.** Ray tracing
+waits until that holds. Every run measured so far was already without ray tracing
+(no run's `command.txt` has `-RayTracing`; the builder is off by default). Where it
+stands against that: 240 ms median (4.2 fps), 17.6-18.7 GB peak private.
+
 ## Layout
 
 | Place | What |
 |---|---|
-| `E:\Dev\VIctory-NV` | main checkout, branch `nvidia` (what we ship) |
-| `E:\Dev\VIctory-merge` | worktree, branch `merge/fxceless`: where work and builds happen; `nvidia` is fast-forwarded to it |
+| `E:\Dev\VIctory-NV` | main checkout, branch `nvidia` (what we ship), pushed as `main` to **github.com/HypeLobbiesHD/VIctory-RTX3060** (remote `mine`) |
+| `E:\Dev\VIctory-avatar2` | worktree, branch `try/avatar2`: where work, builds and runs happen (since session 2); `nvidia` is fast-forwarded to it |
+| `E:\Dev\VIctory-merge` | worktree, branch `merge/fxceless` (behind; was the work tree in session 1) |
 | `E:\Dev\VIctory-fxceless` | worktree at fxceless/main (detached), for A/B runs |
 | `E:\Dev\victory-data` | cache, saves, logs (`logs\`), DXIL dumps; `victory.toml` points here |
 | `E:\Games\GTA6.Xbox.v1.0.2.1` | the user's dump (never committed, never copied into a repo) |
 
-Remotes: `origin` avatarmanz/VIctory-7900XTX (our base), `upstream`
+Commits are made as HypeLobbiesHD's GitHub no-reply address (repo `user.email`); the
+pre-commit hook (`cargo xtask install-hooks`) runs the asset policy. PR heads of the forks:
+`git fetch <remote> "+refs/pull/*/head:refs/prs/<remote>/*"`.
+
+Remotes: `mine` HypeLobbiesHD/VIctory-RTX3060 (ours), `origin` avatarmanz/VIctory-7900XTX (our base), `upstream`
 Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
 
 ## Where it stands (RTX 3060)
@@ -39,6 +50,58 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
 | Stability | pair meetings on: the card hung within seconds of the world (3 TDRs), then the PC bugchecked 0x119 during `warm`. Pair meetings are **off by default** since 1005 |
 | Lighting | lit without the BVH builder for the cutscene; builder runs need pair meetings (opt-in) |
 | Memory | Series X: 20-25 GB private at the cutscene on a 24 GB PC (free RAM < 1 GB, paging, 2-7 s frames); Series S: 15-21 GB |
+
+## Done (session 2)
+
+- **D3D12 Agility SDK 1.620.2** (`apps/victory/src/agility.rs`, `build.rs`): victory.exe
+  exports `D3D12SDKVersion`/`D3D12SDKPath`; `play.ps1` copies Microsoft's DLLs from
+  `victory-data\agility\1.620.2` (NuGet `Microsoft.Direct3D.D3D12`, signed, never in the
+  repo) to `target\<build>\D3D12\` (`-NoAgility` removes it). **On build 22000 the log now
+  says `device13=true opening=Part`**: `ID3D12Device13::OpenExistingHeapFromAddress1`
+  without a Windows upgrade, so renderer port 1 opens its 185 MB region in place without a
+  section heap. System commit after the run: no leak (lower than before it).
+- A pipeline library and the driver's disk cache are good for one D3D12 runtime only: the
+  first Agility run found the library rejected (0x887E0002), made every pipeline during the
+  cutscene (500-950 draws a frame dropped: **black cutscene, 2.5 fps**) and overwrote the
+  196 MB library of the runtime in Windows. Now: the library file is per runtime
+  (`host-pipelines-agility.bin` beside `host-pipelines.bin`), and `warm`'s fingerprint
+  includes the runtime, so `warm --used` makes them again for the new one. **After a change
+  of runtime, `warm --used --jobs 4` before measuring.** The in-box library is lost: a
+  `-NoAgility` run needs a warm of its own first.
+- **Warm does not stand in for the library** (run `s-agility-warm-1126-150943`, after
+  `warm --used`: 2,434 made in 714 s): the library loaded 1,354 pipelines (the in-box one
+  had 2,013), and 500-800 stayed "being made" the whole run, ~1-2 a second (made=100 in the
+  run). So the driver's disk cache that warm fills is not what made the in-box runs fast:
+  the library was, filled over many runs. Cutscene still black in part: 1.9 fps median.
+- **What Part reaches** (same run): 78 windows 376 MB + one 174 MB title buffer in place,
+  port 1's 185 MB region; port 5: 0 constant buffers in place (585 not in place, 7,734 not
+  on 16 bytes). **Still turned down: 746 windows of view memory (the title's page pool,
+  2.36 GB "with holes" + 172 MB scattered)**: view memory is a section's mapped views,
+  which `OpenExistingHeapFromAddress1` cannot open either. So the Agility SDK takes ~0.5 GB
+  off the copies, not the 2.5 GB that matter. No commit left behind (20.2 GB after vs
+  20.8 GB before).
+
+- **Forks' open PRs reviewed** for frame rate: `docs/pr-review-2026-11-26.md` (1,470 open,
+  159 measured hot-path ones, verdicts and order to try).
+- **Card buffers on 10-12 GB cards (avatarmanz#225, taken with our own tier)**: title
+  buffers of 1 MiB and up, up to 1,536 MiB, live on the card (was 16 MiB / 512 MiB).
+  Runs (Series S cutscene, Agility, warm library): env `MIN_MB=1 MB=1536` **177 ms median
+  (5.6 fps), best 120** (`s-cardbuf`); the PR's own 64 KiB minimum 503 ms (`s-pr225`);
+  1 MiB built in 768 ms (`s-card1m`). The last two are the same work as the first (same
+  watches, ~4.5 GB checked a frame) at 10-20x the time: the checked memory was paged out.
+  Settled by the A/B below.
+- **Measuring on this PC**: at ~18 GB private, with Opera, Discord and Wallpaper Engine
+  holding ~3-4 GB, the run pages and one run per setting swings 2-4x. Compare medians of
+  2-3 runs each, other programs closed, and look at "watch(ms)" against "MB checked" to
+  see paging.
+- **Card buffers settled (A/B, other programs closed, alternating):** 1 MiB / 1,536 MiB
+  403 and 176 ms median vs 16 MiB / 512 MiB 968 and 254 ms; copy-back 17 vs 31 ms a frame
+  in every run. 1 MiB is the default for 10-12 GB cards (`shadow::default_card_limits`).
+  **Best so far: 5.7 fps median, 113 ms best** (`ab-1m-b`). The swing inside each setting
+  is paging: the game alone reaches 19 GB, < 400 MB free. RAM is the next lever for frame
+  rate too, not only for the 8-10 GB goal.
+- Commit read right after a run is high while the process is still ending
+  (30.7 GB, 20.9 GB 20 s later): read it once `victory.exe` is gone.
 
 ## Done (session 1)
 
@@ -243,3 +306,4 @@ a time, use `warm --jobs 4`, and do not build while a run is going (RAM).
 | 2026-11-26 | + `VICTORY_WINDOW_EXACT=1` (now default) | opening cutscene, 10 lines | 3,098 windows (350 MB) in place (was 20, 96 MB); window copies 2.9 GB (was 3.4-3.8); **~1 GB less private** at the same points (13.8-16.9 vs 14.9-17.9 GB); 240 ms median (4.2 fps), best 136; preparing 126 ms median; frames clean |
 | 2026-11-26 | same, again (window closed at 78 s) | opening cutscene | host lists 764-861; 16.83 GB peak; 261 ms median. **This set is play.ps1's default now** (`-Safe` drops it) |
 | 2026-11-26 | + `VICTORY_LIST_LAZY=1`, idle trimming | opening cutscene (short: window closed at 77 s) | host lists alive 853-977 (was 1,349); 0.5-0.75 GB less private at the same point; 254 ms median (noise) |
+| 2026-11-26 | + Agility SDK 1.620.2, **unwarmed** (run `s-agility-1126-144950`) | opening cutscene | device13=true, opening=Part; library rejected, pipelines made in the scene: black, median 394 ms (2.5 fps), 18.3 GB peak; not a measure of Part |
