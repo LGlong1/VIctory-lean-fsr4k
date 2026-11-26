@@ -162,8 +162,9 @@ Targets: (1) scattered windows (a placed buffer per run, or the
 
 Runs since the avatarmanz merge ended at 77-103 s with `window closed` in the log:
 that line is written only for a user close (close button, Alt+F4, taskbar or window
-menu: `WM_SYSCOMMAND SC_CLOSE`), not by the runtime. Leave the window alone during a
-run, or find what on the PC sends it.
+menu: `WM_SYSCOMMAND SC_CLOSE`), not by the runtime. It was the user closing it while
+watching (confirmed); not a fault. Leave the window open during a run: the harness
+stops the title itself.
 
 `scripts\autotest.ps1 -Exe <game>\game_scarlett_master.exe -Name <name> [-Seconds 300]
 [-SceneLines 10] [-Console series-s] [-RayTracing] [-More @{...}]`: starts the title
