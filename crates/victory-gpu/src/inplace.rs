@@ -173,6 +173,24 @@ pub(crate) fn place_if_run(start: u64, len: u64) -> Option<Placed> {
     Some(placed)
 }
 
+/// What a read from `address` with no length (a root view) can reach in place, up to
+/// `cell_end`: from the 64 KiB page of `address` to the end of its run of the pool
+/// ([`stretch`]), if that run ends at `cell_end` or at a hole (no view: unmapped). A
+/// stream does not reach over a hole (the console's GPU would fault there), and what a
+/// copy holds there is zeros, as a read past a placed buffer gives; where the run ends at
+/// a page mapped from elsewhere in the pool the stream may go on, and `None` keeps the
+/// copy. `(start, bytes)` on 64 KiB lines.
+pub(crate) fn tail_run(address: u64, cell_end: u64) -> Option<(u64, u64)> {
+    let (first, bytes, _, _) = stretch(address as usize, 1)?;
+    let run_end = (first + bytes) as u64;
+    let end = run_end.min(cell_end);
+    if end < cell_end && cover(end as usize, 1) != Cover::None {
+        return None;
+    }
+    let start = address & !(K64 as u64 - 1);
+    (end > start).then_some((start, end - start))
+}
+
 /// View memory turned down for not being one run of a section, since the start: windows
 /// and bytes that are scattered (views of several places), then those with holes.
 pub(crate) static TURNED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
@@ -1714,6 +1732,30 @@ pub(crate) mod tests {
         assert_eq!(cover(at + 4 * K64, K64), Cover::Run(77, 4 * K64 as u64));
         views_gone(at + 4 * K64, K64);
         assert_eq!(cover(at + 4 * K64, K64), Cover::None);
+    }
+
+    /// What a read with no length can reach in place: its run up to a hole or the cell's
+    /// end; not a run that ends where a page mapped from elsewhere follows (the stream may
+    /// go on there).
+    #[test]
+    fn a_tail_runs_to_a_hole_but_not_past_a_mapped_page_from_elsewhere() {
+        let at = 0x7_5000_0000usize;
+        let cell_end = (at + 16 * K64) as u64;
+        // Pages 0-3 one run of section 78 (in two views), then a hole, then page 6 elsewhere.
+        title_memory_view(at, 2 * K64, 78, 0x10_0000);
+        title_memory_view(at + 2 * K64, 2 * K64, 78, 0x12_0000);
+        title_memory_view(at + 6 * K64, K64, 78, 0x50_0000);
+        assert_eq!(tail_run((at + K64 + 0x40) as u64, cell_end), Some(((at + K64) as u64, 3 * K64 as u64)), "up to the hole");
+        // Pages 8-9 one run, page 10 mapped from elsewhere: the stream may go on.
+        title_memory_view(at + 8 * K64, 2 * K64, 78, 0x20_0000);
+        title_memory_view(at + 10 * K64, K64, 78, 0x60_0000);
+        assert_eq!(tail_run((at + 8 * K64) as u64, cell_end), None, "a mapped page from elsewhere follows");
+        // Pages 14-15 one run to the cell's end.
+        title_memory_view(at + 14 * K64, 2 * K64, 78, 0x30_0000);
+        assert_eq!(tail_run((at + 15 * K64) as u64, cell_end), Some(((at + 15 * K64) as u64, K64 as u64)), "to the cell's end");
+        // No view at all: nothing.
+        assert_eq!(tail_run((at + 4 * K64) as u64, cell_end), None);
+        views_gone(at, 16 * K64);
     }
 
     /// Only private memory committed whole, read-write, is taken for a part.

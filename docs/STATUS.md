@@ -140,10 +140,12 @@ Windows: the copied ones were 4 MiB grid cells over streaming memory the title m
 page by page (517 of 548 cells "with holes", 31 scattered), while what an ask names is nearly
 always one run of the pool. `VICTORY_WINDOW_EXACT=1` places just the asked range (64 KiB lines)
 in place first. Asks with no length (root views: the shader reads from the address up to the cell's end)
-are placed in place only when that whole tail is one run of the pool, so the bytes read are
-the same as a copy's: 114 of them in a run, no measurable memory change; ~1.6 GB of copies
-"without a length" remain. Doing better needs to know how far a root view reads (the draw's
-vertex count x stride, say); guessing would give zeros past a gap, broken geometry.
+are placed in place up to the end of their run of the pool when that run ends at a hole
+(unmapped page: a stream does not reach over one; a copy holds zeros there too) or at the
+cell's end; where a page mapped from elsewhere follows, the stream may go on and the copy
+stays (`inplace::tail_run`). The draw cannot give a length (mesh shaders read their own
+vertex counts). 479 no-length windows in place (was 114), copies without a length 1.38 GB
+(was 1.64), window copies 2.51 GB (was 2.88), ~0.2-0.4 GB less private; frames intact.
 Truly scattered windows: ~30, ~130 MB.
 Targets: (1) scattered windows (a placed buffer per run, or the
 64 KiB-directory addressing the ray-tracing path uses), (2) command-list growth,
@@ -204,6 +206,7 @@ a time, use `warm --jobs 4`, and do not build while a run is going (RAM).
 | 2026-11-26 | 1006 merge, Series S, ports 1,2,5,6,7 | opening cutscene | median 362 ms (2.8 fps); port 1 and 5 nothing (no Device13) |
 | 2026-11-26 | + `VICTORY_POOL_COMMIT=1 VICTORY_INPLACE=1` | opening cutscene | **median 245 ms (4.1 fps), best 136 ms (7.3)**; 19 windows in place; 19.3 GB |
 | 2026-11-26 | + port 1 through the section | opening cutscene | median 244 ms (4.1 fps), best 202; port 1: 185 MB in place; watch 14-26 ms (was up to 1,170); 18.6 GB |
+| 2026-11-26 | + no-length tails to a hole | opening cutscene, 5 lines (closed) | 4,830 windows (666 MB) in place; copies 2.51 GB; 16.68 GB at line 5 (was 16.9-17.1); 234 ms median (4.3 fps); geometry intact |
 | 2026-11-26 | + `VICTORY_WINDOW_EXACT=1` (now default) | opening cutscene, 10 lines | 3,098 windows (350 MB) in place (was 20, 96 MB); window copies 2.9 GB (was 3.4-3.8); **~1 GB less private** at the same points (13.8-16.9 vs 14.9-17.9 GB); 240 ms median (4.2 fps), best 136; preparing 126 ms median; frames clean |
 | 2026-11-26 | same, again (window closed at 78 s) | opening cutscene | host lists 764-861; 16.83 GB peak; 261 ms median. **This set is play.ps1's default now** (`-Safe` drops it) |
 | 2026-11-26 | + `VICTORY_LIST_LAZY=1`, idle trimming | opening cutscene (short: window closed at 77 s) | host lists alive 853-977 (was 1,349); 0.5-0.75 GB less private at the same point; 254 ms median (noise) |

@@ -5552,15 +5552,16 @@ fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Sha
     // without a length (a root view) reads from its address up to its 4 MiB cell's end, as
     // its copy would hold: in place only if all of that is one run of the pool, so the
     // shader reads the same bytes either way.
+    // An ask without a length takes its run up to a hole or its cell's end
+    // (`inplace::tail_run`): what the stream can read; else the whole tail, as before.
     let exact = exact_windows().then(|| {
         let at = address & !0xffff;
-        let to = if unsized_ask {
+        if unsized_ask {
             let (start, len) = window_of(address, end, WINDOW);
-            start + len
+            crate::inplace::tail_run(address, start + len).unwrap_or((at, start + len - at))
         } else {
-            end.next_multiple_of(0x10000)
-        };
-        (at, to - at)
+            (at, end.next_multiple_of(0x10000) - at)
+        }
     });
     if let Some(key) = exact
         && let Some(shadow) = LOOSE.read().unwrap_or_else(|e| e.into_inner()).get(&key)
