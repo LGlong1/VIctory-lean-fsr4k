@@ -612,7 +612,18 @@ pub(crate) fn removal_context() -> String {
 /// host device removed.
 pub(crate) fn log_removal_context() {
     static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if !(trail_on() || dred_any()) || SAID.swap(true, Ordering::Relaxed) {
+    if SAID.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    // Always, once: the memory at this moment. The memory line is seconds
+    // old, and a PC or a card out of memory would not be in it (on a PC of
+    // 24 GB with a page file, the commit limit is the first thing to rule
+    // out). After fxceless b9011c9, with what this tree already has.
+    tracing::error!("memory when the host device went: {}", removal_memory());
+    if let Some(host) = host() {
+        host.log_video_memory("where the removal was found");
+    }
+    if !(trail_on() || dred_any()) {
         return;
     }
     tracing::error!("when the host device went: {}", removal_context());
@@ -620,6 +631,47 @@ pub(crate) fn log_removal_context() {
         let data = host().map(|h| h.removal_data(&[])).unwrap_or_default();
         tracing::error!("device-removed data{}", if data.is_empty() { "; none" } else { &data });
     }
+}
+
+/// The process's and the PC's memory now, in one line, for a removal
+/// report: private (commit) bytes and working set, the system's commit
+/// against its limit, and free physical memory.
+fn removal_memory() -> String {
+    use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
+    let mut c = PROCESS_MEMORY_COUNTERS {
+        cb: size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: our own process and a sized structure.
+    let process = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) } != 0;
+    let mut m = MEMORYSTATUSEX {
+        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: a sized structure.
+    let system = unsafe { GlobalMemoryStatusEx(&mut m) } != 0;
+    let mut text = String::new();
+    if process {
+        text.push_str(&format!(
+            "process private {:.1} GB (peak {:.1}), working set {:.1} GB",
+            gb(c.PagefileUsage as u64),
+            gb(c.PeakPagefileUsage as u64),
+            gb(c.WorkingSetSize as u64)
+        ));
+    }
+    if system {
+        text.push_str(&format!(
+            "; system commit {:.1} of {:.1} GB, physical free {:.1} of {:.1} GB",
+            gb(m.ullTotalPageFile - m.ullAvailPageFile),
+            gb(m.ullTotalPageFile),
+            gb(m.ullAvailPhys),
+            gb(m.ullTotalPhys)
+        ));
+    }
+    if text.is_empty() { "the system gives no numbers".to_owned() } else { text }
 }
 
 /// Time spent in submissions since the last frame-rate line, in
@@ -9116,7 +9168,14 @@ impl Host {
             #[cfg(feature = "diagnostics")]
             crate::replay::record::present(texture, state);
             let mut showing = crate::timeline::span("the host's Present");
-            let _ = p.swap_chain.Present(0, DXGI_PRESENT(0));
+            // What Present answers: a removal it is the first to report
+            // looked as if a later call found it (after fxceless b9011c9).
+            // Said once; a status that is no error ("occluded") is not.
+            let shown = p.swap_chain.Present(0, DXGI_PRESENT(0));
+            if shown.is_err() {
+                static ONCE: std::sync::Once = std::sync::Once::new();
+                ONCE.call_once(|| tracing::error!("Present answered {:#010x} (said once)", shown.0 as u32));
+            }
             showing.next("the frame meter");
             #[cfg(feature = "diagnostics")]
             p.panel.frame(p.meter.line_due());
