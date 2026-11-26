@@ -172,12 +172,16 @@ pub(crate) fn cards() -> bool {
 /// - Unknown (`None`, e.g. WARP) or `<= 9 GiB` (8 GB cards):
 ///   16 MiB / 512 MiB.
 /// - `> 9 GiB` and `<= 12 GiB` (10–12 GB cards, whose WDDM budget is about
-///   11 GiB): every title buffer (64 KiB and up) / 1536 MiB. With 16 MiB /
+///   11 GiB): 1 MiB / 1536 MiB. With 16 MiB /
 ///   512 MiB an RTX 3060 12 GB on a 16 GB PC ran the opening cutscenes at
 ///   2.5 fps on this branch; with these, 7.0 (and 2.0 -> 10.0 on
 ///   codec-d/cool_fox f4b48ad): the small copies stay in the PC's memory,
 ///   where every load, store and atomic of a shader crosses the bus, and
-///   they are nearly all the copies there are.
+///   they are nearly all the copies there are. avatarmanz#225 took every
+///   buffer of 64 KiB and up; on an RTX 3060 12 GB with 24 GB of RAM (this
+///   fork's PC, Series S cutscene) that made write-watching 240-480 ms a frame
+///   and the frame 503 ms, where 1 MiB / 1536 MiB gave 177 ms (346 with
+///   16 MiB / 512 MiB): runs s-pr225 and s-cardbuf, 2026-11-26.
 /// - `> 12 GiB` and `< 20 GiB` (16 GB cards, whose WDDM budget is typically
 ///   ~13.5–15.2 GiB): 4 MiB / 2048 MiB.
 /// - `>= 20 GiB` (24–32+ GB cards): 1 MiB / `(budget_mb / 4).min(8192)` MiB,
@@ -194,7 +198,7 @@ fn default_card_limits(local_vram_budget: Option<u64>) -> (u64, u64) {
     if budget_mb <= NINE_GIB_MB {
         (16 << 10, 512)
     } else if budget_mb <= TWELVE_GIB_MB {
-        (64, 1536)
+        (1 << 10, 1536)
     } else if budget_mb < TWENTY_GIB_MB {
         (4 << 10, 2048)
     } else {
@@ -225,7 +229,7 @@ fn resolve_card_limits(
 /// shaders write takes its size twice), both in bytes:
 /// `VICTORY_CARD_BUFFERS_MIN_MB` and `VICTORY_CARD_BUFFERS_MB`.
 /// Defaults scale with the adapter's local VRAM budget (16 MiB / 512 MiB on
-/// `<= 9 GiB` budgets, 64 KiB / 1536 MiB on 10–12 GB cards, 4 MiB / 2048 MiB
+/// `<= 9 GiB` budgets, 1 MiB / 1536 MiB on 10–12 GB cards, 4 MiB / 2048 MiB
 /// on 16 GB cards, 1 MiB / up to 8192 MiB on `>= 20 GiB` budgets), and
 /// explicit env vars always override.
 fn card_limits() -> (u64, u64) {
@@ -5804,10 +5808,10 @@ mod window_tests {
         assert_eq!(default_card_limits(Some(9 * GIB)), (16 << 10, 512));
 
         // 10–12 GB tier (> 9 GiB, <= 12 GiB; an RTX 3060 12 GB reports 11,342 MiB):
-        // every title buffer, 1536 MiB.
-        assert_eq!(default_card_limits(Some(11_342 * MIB)), (64, 1536));
-        assert_eq!(default_card_limits(Some(11 * GIB)), (64, 1536));
-        assert_eq!(default_card_limits(Some(12 * GIB)), (64, 1536));
+        // 1 MiB / 1536 MiB.
+        assert_eq!(default_card_limits(Some(11_342 * MIB)), (1 << 10, 1536));
+        assert_eq!(default_card_limits(Some(11 * GIB)), (1 << 10, 1536));
+        assert_eq!(default_card_limits(Some(12 * GIB)), (1 << 10, 1536));
 
         // 16 GB tier (> 12 GiB, < 20 GiB), including WDDM budgets around 13.5–15 GiB.
         assert_eq!(default_card_limits(Some(13 * GIB)), (4 << 10, 2048));
@@ -5826,7 +5830,7 @@ mod window_tests {
         assert_eq!(resolve_card_limits(Some(12 * GIB), Some(0), Some(1024)), (MIB, 1024 * MIB));
         assert_eq!(resolve_card_limits(None, Some(u64::MAX), Some(u64::MAX)), (u64::MAX, u64::MAX));
         assert_eq!(resolve_card_limits(None, None, None), (16 * MIB, 512 * MIB));
-        assert_eq!(resolve_card_limits(Some(11 * GIB), None, None), (64 << 10, 1536 * MIB));
+        assert_eq!(resolve_card_limits(Some(11 * GIB), None, None), (MIB, 1536 * MIB));
     }
 
     /// An ask that may take any window takes the longest that holds all of
