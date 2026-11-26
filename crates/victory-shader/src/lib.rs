@@ -32,8 +32,9 @@ pub mod structure;
 /// hosts; 1002 adds cool_fox 8cc31ab's lane-uniform and restored-lane analysis; 1003
 /// leaves 64-thread programs unwidened by default and waits at most 2^14 reads; 1004 keeps
 /// a wave together in the wait (every lane decides on the first lane's read); 1005 makes pair
-/// meetings opt-in (`VICTORY_PAIR_MEET=1`) after they hung the card.
-pub const TRANSLATOR_VERSION: u32 = 1005;
+/// meetings opt-in (`VICTORY_PAIR_MEET=1`) after they hung the card; 1006 is the merge of
+/// avatarmanz main (c9c932cb: their wave32 work, the fixed-point lane-uniform proof).
+pub const TRANSLATOR_VERSION: u32 = 1006;
 
 pub use dxbc::{Container, FourCC, Part};
 pub use dxil::{DxilProgram, ShaderKind, XboxExtras};
