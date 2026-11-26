@@ -27,11 +27,10 @@ $settings = @{
     # committed and what of it can be read in place (any Windows 10+), avatarmanz's renderer
     # patches 1, 2, 5, 6, 7, and host lists taken only at the title's reset. 2.8 -> 4.1 fps
     # median in the opening cutscene (Series S), ~0.75 GB less private memory.
-    # VICTORY_POOL_COMMIT (and with it in-place windows of view memory) is OFF for now: on
-    # 2026-11-26 the PC ended with ~50 GB committed that no process held (about eight 6.1 GiB
-    # pools), the commit limit was hit, a run died on a failed allocation and the pagefile
-    # grew to 54 GB. Suspect: the driver keeps a section opened as a heap after its process.
-    # Back on once `card_section_heap_after_the_process` (inplace.rs) shows commit comes back.
+    # VICTORY_POOL_COMMIT is OFF: its point was opening the pool's section as a heap, and the
+    # NVIDIA driver keeps a section so opened committed after the game ends (~5-6 GB a run,
+    # until a restart; docs/STATUS.md, open issue 0). The code also refuses section heaps
+    # unless VICTORY_INPLACE_SECTIONS=1.
     VICTORY_INPLACE = '1'; VICTORY_LIST_LAZY = '1'; VICTORY_WINDOW_EXACT = '1'
     VICTORY_PORT_CONSTANTS = '1'; VICTORY_PORT_DESCRIPTORS = '1'; VICTORY_PORT_CBV = '1'
     VICTORY_PORT_GUARD = '1'; VICTORY_PORT_JOURNAL = '1'

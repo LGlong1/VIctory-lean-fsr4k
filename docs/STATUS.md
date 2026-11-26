@@ -95,21 +95,27 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
 
 ## Open issues (most important first)
 
-0. **Commit leaked outside the game (2026-11-26, suspected committed pool).** After a day of
-   runs, ~50 GB of the PC's commit stayed in use with no game running (processes' private
-   bytes summed to 10.9 GB, kernel pools ~2 GB; commit 60.8 of 74 GB, peak at the limit).
-   The run `s-bigtrace-1126-130747` then died at 57 s on `memory allocation of 12582912
-   bytes failed` (E_OUTOFMEMORY on shared/upload buffers just before), the screen flashed,
-   and Windows grew the system-managed pagefile to 54 GB, leaving C: with 74 MB. No display
-   driver reset in the event log. About eight times the 6.1 GiB title pool: the suspect is
-   `VICTORY_POOL_COMMIT=1` with the section opened as a D3D12 heap
-   (`OpenExistingHeapFromFileMapping`), the driver keeping it after the process ends.
-   **Done:** play.ps1 no longer sets `VICTORY_POOL_COMMIT` by default. **Next, after a
-   reboot:** run the ignored test `inplace::tests::card_section_heap_after_the_process`
-   (1 GiB section on the card) with `VICTORY_LEAK_END=clean|exit|abort`, reading system
-   commit (GetPerformanceInfo) before and after each; if commit does not come back, keep
-   the committed pool off (or close the heap before exit, or open view memory per view).
-   Check commit before long sessions: `C:\pagefile.sys` growing means it is leaking again.
+0. **Commit leaked by the NVIDIA driver for sections opened as heaps (2026-11-26, found and
+   gated).** After a day of runs ~50 GB of the PC's commit stayed in use with no game
+   running; the run `s-bigtrace-1126-130747` died on a failed allocation, the screen
+   flashed, and the system-managed pagefile grew to 54 GB (C: at 74 MB free). A reboot gave
+   it back. The test `inplace::tests::card_section_heap_after_the_process` (ignored; a 1 GiB
+   `SEC_COMMIT` section on the RTX 3060, `VICTORY_LEAK_END=clean|exit|abort|region|none`,
+   system commit read with GetPerformanceInfo before and after) showed: opened as a heap with
+   `OpenExistingHeapFromFileMapping`, **0.7-0.95 GB of each GiB stays committed after the
+   process, whether it let everything go, exited or aborted**; the section alone (`none`)
+   and a committed allocation opened whole with `OpenExistingHeapFromAddress` (`region`, what
+   `VICTORY_INPLACE=1` uses for title buffers) leave nothing. Each run with the committed page
+   pool so left ~5-6 GB until the PC restarts. **Done:** `inplace::sections_allowed`: a
+   section is opened as a heap only with `VICTORY_INPLACE_SECTIONS=1` (warns), whatever
+   `VICTORY_POOL_COMMIT` says; play.ps1 no longer sets `VICTORY_POOL_COMMIT`. In-place view
+   memory (exact windows, the renderer port's regions) therefore falls back to copies.
+   Checked with a game run (`s-noleak`, Series S, 10 scene lines): system commit after the
+   run 258 MB lower than before it; 4.2 fps median (239 ms), as before; peak private
+   18.7 GB (16.7 GB with section heaps: view memory is copied again), 224 MB free at the low.
+   **Next:** a way to read view memory in place without a section heap (e.g. map the pool's
+   views from a committed allocation opened whole), and the cost of losing it (fps, memory).
+   Device13's `OpenExistingHeapFromAddress1` is untested (not on build 22000).
 
 1. **CPU: write-watch askings.** The game writes ~2,200 pages (9 MB) a frame; to find
    them the runtime asks Windows about 1.2 GB (`GetWriteWatch`, ~61-180 ns a page):

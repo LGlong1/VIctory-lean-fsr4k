@@ -34,6 +34,12 @@ Belobug, DexNom and our own. Machine: i5-11400F, 24 GB RAM, RTX 3060 12 GB.
   followed by a bugcheck 0x119 on the user's PC. Anything that can spin or wait on
   the GPU is opt-in until a short run shows it holds; runs are short; one change
   at a time; `warm --jobs 4`; nothing heavy (builds) while a run is going.
+- **Do not leak the PC's memory.** A memory change that involves the driver (heaps opened
+  from title memory, sections, shared resources) is checked for what it leaves behind after
+  the process: system commit (GetPerformanceInfo) before and after a run. Sections opened as
+  heaps (`OpenExistingHeapFromFileMapping`) leak on the NVIDIA driver and stay off
+  (`VICTORY_INPLACE_SECTIONS`); STATUS.md open issue 0. If `C:\pagefile.sys` has grown or
+  commit stays high with no game running, stop and tell the user (a restart gives it back).
 - **Update `docs/STATUS.md`** whenever something changes: a fix, a measurement,
   a new issue, a changed plan. Keep it short and current.
 

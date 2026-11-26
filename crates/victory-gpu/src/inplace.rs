@@ -252,11 +252,37 @@ static SECTIONS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<
 /// The heap of section `handle` if it was made committed whole (`Err(None)` if not: the
 /// host refuses a reserved section), opened once ([`SECTIONS`]).
 pub(crate) fn committed_section_heap(device: &ID3D12Device, handle: usize) -> Result<ID3D12Heap, Option<windows::core::Error>> {
+    if !sections_allowed() {
+        return Err(None);
+    }
     let committed = views().sections.iter().any(|&(h, _, whole)| h == handle && whole);
     if !committed {
         return Err(None);
     }
     section_heap(device, handle)
+}
+
+/// Whether a section may be opened as a heap at all (`VICTORY_INPLACE_SECTIONS=1`, off by
+/// default). On the RTX 3060 (driver of 2026-11, Windows 11 22000) a section opened with
+/// `OpenExistingHeapFromFileMapping` keeps most of its commit after the heap, the section
+/// and the process are gone, until the PC restarts: 0.7-0.95 GB of each 1 GiB section, whether
+/// the process let everything go, exited or aborted (`card_section_heap_after_the_process`);
+/// a section never opened as a heap, and an allocation opened whole
+/// (`OpenExistingHeapFromAddress`), leave nothing. Each run with the committed page pool
+/// (6.1 GiB) so left ~5-6 GB behind: after a day of runs 50 GB, the commit limit was hit and
+/// the pagefile filled the system drive.
+pub(crate) fn sections_allowed() -> bool {
+    if cfg!(test) {
+        return true;
+    }
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("VICTORY_INPLACE_SECTIONS").is_some_and(|v| v == "1");
+        if on {
+            tracing::warn!("sections opened as heaps (VICTORY_INPLACE_SECTIONS=1): the driver may keep their memory committed until the PC restarts");
+        }
+        on
+    })
 }
 
 /// The heap of section `handle`, opened once.
@@ -1996,6 +2022,30 @@ pub(crate) mod tests {
             let handle = CreateFileMappingW(INVALID_HANDLE_VALUE, std::ptr::null(), mem::PAGE_READWRITE | SEC_COMMIT, (size >> 32) as u32, size as u32, std::ptr::null());
             assert!(!handle.is_null());
             title_memory_section(handle as usize, size, true);
+            // `region`: a committed allocation opened whole (`Opening::Region`), let go cleanly
+            if end == "region" {
+                let base = mem::VirtualAlloc(std::ptr::null(), size as usize, mem::MEM_RESERVE | mem::MEM_COMMIT, mem::PAGE_READWRITE).cast::<u8>();
+                assert!(!base.is_null());
+                std::ptr::write_bytes(base, 1, 64 << 20);
+                let placed = place_in(&device, Opening::Region, base as u64 + 0x40, 64 << 20).unwrap_or_else(|e| panic!("not placed: {e:?}"));
+                eprintln!("placed; ending: region");
+                drop(placed);
+                regions_forget(base as usize, size as usize);
+                drop(device);
+                mem::VirtualFree(base.cast(), 0, mem::MEM_RELEASE);
+                CloseHandle(handle);
+                return;
+            }
+            // `none`: the section only, never opened as a heap (the control)
+            if end == "none" {
+                std::ptr::write_bytes(
+                    windows_sys::Win32::System::Memory::MapViewOfFile(handle, windows_sys::Win32::System::Memory::FILE_MAP_WRITE, 0, 0, 0).Value.cast::<u8>(),
+                    1,
+                    64 << 20,
+                );
+                eprintln!("section only; ending: none");
+                std::process::exit(0);
+            }
             let placed = place_in_section(&device, handle as usize, 0, 64 << 20).unwrap_or_else(|e| panic!("not placed: {e:?}"));
             eprintln!("placed; ending: {end}");
             match end.as_str() {
