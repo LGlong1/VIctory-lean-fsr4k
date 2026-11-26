@@ -46,7 +46,7 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
 - `f5c60ea`: textures the title paints through another view (video planes) are
   looked at every frame while they change (`VICTORY_PAINTED_FRAMES`).
 - Removal report: memory at the moment of a device loss; Present's error said.
-- **Wave64 on 32-lane hosts (uncommitted at time of writing, see below):**
+- **Wave64 on 32-lane hosts** (e4ac42f, translator version 1001):
   console wave64 programs whose LDS is read and written inside a lane branch kept
   `WaveSize(64)`, which NVIDIA refuses (E_INVALIDARG): 9 of the 52 ray-tracing
   structure builder programs and 29 game compute shaders (LocalLights,
@@ -63,6 +63,14 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
   - Result: builder 52/52 pipelines accepted on the 3060 (was 43); game compute
     shaders needing wave64 29 → 1 (+2 that now exceed 32 KiB of LDS).
   - GPU test: `wave64_tests::a_wave_or_inside_a_lane_branch_in_a_group_of_four_console_waves`.
+- **CGBJ cool_fox merged** (see `docs/coolfox-merge-decisions.md`; translator
+  version 1002): movie-plane uploads (likely fixes the intro rewind), blocking
+  fence waits with `WaitOnAddress` (CPU), `TablePlan` (CPU), no RT-resolve
+  pipelines without the builder, first-scene pipelines early, residency guard and
+  low-commit back-off (memory), Series S two-plane compose, XMA audio fixes.
+  Our wave64 lowering kept as the default over theirs.
+- `scripts\play.ps1` / `autotest.ps1`: `-Console series-s` (cool_fox runs the
+  Series S profile: lower resolution, less memory).
 
 ## Open issues (most important first)
 
@@ -70,9 +78,9 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
    `scripts\play.ps1 -RayTracing` (VICTORY_BVH_BUILDER=1), look at frames.
 2. **Frame rate.** CPU-bound: one thread prepares submissions (fxceless measured
    ~70 ms + 13 ms per 1,000 draws on a 14700KF). 6 cores here. See Plans.
-3. **Intro video rewinds.** 0 bytes of textures uploaded during the intro: the
-   video reaches the card in place. Suspect a fence signalled early so Bink
-   overwrites a frame still shown. Not fixed.
+3. **Intro video rewinds.** The video decoder's planes went through one staging
+   buffer shared by frames in flight. cool_fox's per-list movie-plane uploads are
+   in; to be checked in a run.
 4. **71 mesh shaders (ped skinning) fail DXIL validation**: vertex + primitive
    output > 32 KiB. May draw nothing on NVIDIA.
 5. **Memory 40-46 GB.** CGBJ claims 8-10 GB.
@@ -84,14 +92,24 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
 
 ## Plans (in order)
 
-1. Commit the wave64 work; retranslate (`victory shaders ...`), `victory warm --used`.
-2. Assess CGBJ's now-public NVIDIA build (`codec-d/cool_fox`, GPL-3.0, ~25 fps,
-   8 GB RAM): read source only, decide commit by commit like the fxceless merge.
+1. Retranslate (`victory shaders ...`) and `victory warm --used` at version 1002.
+2. Unattended runs: Series X vs Series S, then `-RayTracing`; look at the frames.
 3. CPU cost of the submission path: make the hot code cheaper, move work to the
    GPU where it is a better fit, avoid work that is redone each frame.
-4. Unattended test harness (`scripts\autotest.ps1`): `VICTORY_KEYS` for input,
-   `VICTORY_CAPTURE` for PNG frames, timed run, summary of the log.
-5. Lighting with the builder on; then the mesh output limit; then memory.
+   Biggest measured cost: copy-back of shader writes (104 ms/frame in the
+   cutscene, 385 MB compared on the CPU); first lever: more host copies on the
+   card (`VICTORY_CARD_BUFFERS_MIN_MB=1`, `VICTORY_CARD_BUFFERS_MB=1536`), where
+   compares run on the GPU.
+4. Lighting with the builder on; then the mesh output limit; then memory.
+
+## Unattended runs
+
+`scripts\autotest.ps1 -Exe <game>\game_scarlett_master.exe -Name <name> [-Seconds 300]
+[-Console series-s] [-RayTracing] [-More @{...}]`: starts the title with play.ps1's
+settings, presses Enter every 5 s from 15 s to 4 min (`VICTORY_KEYS`), saves frames
+as PNG every 150 frames (`VICTORY_CAPTURE`), stops it after `-Seconds`, and writes
+`E:\Dev\victory-data\runs\<name>-<time>\summary.txt` (frame-rate timeline, refused
+pipelines, warnings) beside `log.txt` and `frames\`.
 
 ## Measurements log
 

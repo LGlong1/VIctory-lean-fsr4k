@@ -2,7 +2,7 @@
 # frames saved as PNG, stopped after a time, and its log summed up.
 #   scripts\autotest.ps1 -Exe <your copy's executable> [-Name cutscene] [-Seconds 300]
 #       [-Keys '20:Enter,25:Enter'] [-RayTracing] [-Safe] [-More @{VICTORY_X='1'}]
-#       [-CaptureEvery 150]
+#       [-CaptureEvery 150] [-Console series-s]
 # Everything goes to <data>\runs\<name>-<time>\: log.txt, frames\frame-<n>.png, summary.txt.
 # The data folder is victory.toml's data_dir's parent (E:\Dev\victory-data here), or -Out.
 # Default keys: Enter every 5 s from 15 s to 4 min (through the splash, the start screen and
@@ -16,6 +16,7 @@ param(
     [switch]$Safe,
     [hashtable]$More = @{},
     [int]$CaptureEvery = 150,
+    [ValidateSet('series-x', 'series-s')][string]$Console = 'series-x',
     [string]$Out = 'E:\Dev\victory-data\runs'
 )
 $ErrorActionPreference = 'Stop'
@@ -40,6 +41,7 @@ $literal = ($settings.GetEnumerator() | ForEach-Object { "'{0}'='{1}'" -f $_.Key
 $flags = @()
 if ($RayTracing) { $flags += '-RayTracing' }
 if ($Safe) { $flags += '-Safe' }
+$flags += "-Console $Console"
 $command = "& '{0}' -Exe '{1}' {2} -More @{{{3}}} *> '{4}'" -f (Join-Path $root 'scripts\play.ps1'), $Exe, ($flags -join ' '), $literal, $log
 Set-Content (Join-Path $run 'command.txt') $command
 
