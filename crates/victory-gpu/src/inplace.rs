@@ -155,6 +155,49 @@ fn place_in(device: &ID3D12Device, how: Opening, start: u64, len: u64) -> Result
     }
 }
 
+/// Title memory that is one run of a section's pages (`bytes` from `offset` of section
+/// `handle`), placed in the section opened as a heap (`OpenExistingHeapFromFileMapping`,
+/// `ID3D12Device3`: Windows 10 and later), if the section was made committed whole (the
+/// host refuses a reserved one: `VICTORY_POOL_COMMIT=1` in the runtime makes the title's
+/// page pool so). The heap is the section, opened once and kept ([`SECTIONS`]): it does not
+/// depend on the title's views of it, locks nothing, and costs nothing until a buffer is
+/// placed. The buffer shows the section's bytes whichever view the title writes through.
+pub(crate) fn place_in_section(device: &ID3D12Device, handle: usize, offset: u64, len: u64) -> Result<Placed, Option<windows::core::Error>> {
+    let at = offset & !(K64 as u64 - 1);
+    let bytes = (offset + len.max(1)).next_multiple_of(K64 as u64) - at;
+    let heap = committed_section_heap(device, handle)?;
+    let buffer = place(device, &heap, at, bytes).map_err(Some)?;
+    // SAFETY: a live buffer.
+    let gpu = unsafe { buffer.GetGPUVirtualAddress() } + (offset - at);
+    Ok(Placed { buffer, heap, gpu, bias: offset - at })
+}
+
+/// Sections opened as heaps ([`place_in_section`]), by handle. A heap lives on in the
+/// buffers placed in it after it leaves this table.
+static SECTIONS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<usize, ID3D12Heap>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// The heap of section `handle` if it was made committed whole (`Err(None)` if not: the
+/// host refuses a reserved section), opened once ([`SECTIONS`]).
+pub(crate) fn committed_section_heap(device: &ID3D12Device, handle: usize) -> Result<ID3D12Heap, Option<windows::core::Error>> {
+    let committed = views().sections.iter().any(|&(h, _, whole)| h == handle && whole);
+    if !committed {
+        return Err(None);
+    }
+    section_heap(device, handle)
+}
+
+/// The heap of section `handle`, opened once.
+fn section_heap(device: &ID3D12Device, handle: usize) -> Result<ID3D12Heap, Option<windows::core::Error>> {
+    let mut sections = SECTIONS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(heap) = sections.get(&handle) {
+        return Ok(heap.clone());
+    }
+    let heap = open(device, From::Section(handle)).map_err(Some)?;
+    sections.insert(handle, heap.clone());
+    Ok(heap)
+}
+
 /// How title memory is opened in place on this PC ([`opening`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Opening {
@@ -316,10 +359,38 @@ pub(crate) fn place_for(start: u64, len: u64, window: bool) -> Option<Placed> {
     if level() < if window { 1 } else { 2 } {
         return None;
     }
-    // View memory: known from the runtime without asking Windows.
-    if cover(start as usize, len as usize) != Cover::None {
-        STATS[4].fetch_add(1, Ordering::Relaxed);
-        return None;
+    // View memory: known from the runtime without asking Windows. One run of a section
+    // that was made committed is placed in that section opened as a heap
+    // ([`place_in_section`]); any other is copied.
+    let shown = cover(start as usize, len as usize);
+    if shown != Cover::None {
+        let Cover::Run(section, offset) = shown else {
+            STATS[4].fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
+        if STATS[1].load(Ordering::Relaxed) + STATS[3].load(Ordering::Relaxed) + len > most() {
+            STATS[6].fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        let host = crate::host::host()?;
+        return match place_in_section(&host.device, section, offset, len) {
+            Ok(placed) => {
+                let at = if window { 0 } else { 2 };
+                STATS[at].fetch_add(1, Ordering::Relaxed);
+                STATS[at + 1].fetch_add(len, Ordering::Relaxed);
+                Some(placed)
+            }
+            Err(None) => {
+                STATS[4].fetch_add(1, Ordering::Relaxed);
+                None
+            }
+            Err(Some(e)) => {
+                if STATS[5].fetch_add(1, Ordering::Relaxed) < 8 {
+                    tracing::warn!(start = format_args!("{start:#x}"), len, error = %e, "title view memory not opened in place: a copy instead");
+                }
+                None
+            }
+        };
     }
     if STATS[1].load(Ordering::Relaxed) + STATS[3].load(Ordering::Relaxed) + len > most() {
         STATS[6].fetch_add(1, Ordering::Relaxed);
@@ -503,6 +574,8 @@ pub fn title_memory_section(section: usize, bytes: u64, committed: bool) {
 /// The runtime lets go of a section, and of its handle: no view the title
 /// sees is of it any more, and [`beside`]'s view goes.
 pub fn title_memory_section_gone(section: usize) {
+    // (its heap, if it was opened: a handle's number may be given out again)
+    SECTIONS.lock().unwrap_or_else(|e| e.into_inner()).remove(&section);
     let whole = {
         let mut v = views_mut();
         let at = v.whole.iter().position(|w| w.0 == section);
@@ -1639,6 +1712,51 @@ pub(crate) mod tests {
         assert!(probe.section_reads && probe.section_writes, "a committed section in place");
         assert!(probe.section_outlives_views, "the section's heap does not depend on views");
         assert!(probe.reserved_section_refused, "a reserved section is refused");
+    }
+
+    /// View memory in place ([`place_in_section`]) on the software adapter: a section made
+    /// committed is opened as a heap once and a buffer placed at a page's offset in it; the
+    /// GPU reads what the title wrote through one view and its write is seen through another
+    /// view of the same pages. A reserved section is turned down without asking the host.
+    #[test]
+    fn warp_view_memory_in_place_through_its_committed_section() {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Memory::{CreateFileMappingW, FILE_MAP_WRITE, MapViewOfFile, SEC_COMMIT, SEC_RESERVE, UnmapViewOfFile};
+        let _turn = crate::indirect::tests::warp_turn();
+        let Some(device) = warp() else { return };
+        // SAFETY: sections and views of the test's own.
+        unsafe {
+            let size = 16 * K64;
+            let reserved = CreateFileMappingW(INVALID_HANDLE_VALUE, std::ptr::null(), mem::PAGE_READWRITE | SEC_RESERVE, 0, size as u32, std::ptr::null());
+            title_memory_section(reserved as usize, size as u64, false);
+            assert!(matches!(place_in_section(&device, reserved as usize, 0, 64), Err(None)), "a reserved section is turned down");
+            title_memory_section_gone(reserved as usize);
+            CloseHandle(reserved);
+
+            let handle = CreateFileMappingW(INVALID_HANDLE_VALUE, std::ptr::null(), mem::PAGE_READWRITE | SEC_COMMIT, 0, size as u32, std::ptr::null());
+            assert!(!handle.is_null());
+            title_memory_section(handle as usize, size as u64, true);
+            let one = MapViewOfFile(handle, FILE_MAP_WRITE, 0, 0, size).Value.cast::<u8>();
+            let two = MapViewOfFile(handle, FILE_MAP_WRITE, 0, 0, size).Value.cast::<u8>();
+            assert!(!one.is_null() && !two.is_null());
+            let (offset, len) = (5 * K64 as u64 + 0x230, 3000u64);
+            fill(one.add(offset as usize), len as usize, 11);
+            let placed = place_in_section(&device, handle as usize, offset, len).unwrap_or_else(|e| panic!("not placed: {e:?}"));
+            assert_eq!(placed.bias, 0x230);
+            let again = place_in_section(&device, handle as usize, 9 * K64 as u64, 16).unwrap_or_else(|e| panic!("not placed: {e:?}"));
+            assert_eq!(placed.heap.as_raw(), again.heap.as_raw(), "the section is opened once");
+            let mut rig = Rig::new(&device).unwrap();
+            let got = rig.fetch(&placed.buffer, placed.bias, len as usize).unwrap();
+            assert!(same(one.add(offset as usize), &got), "the GPU reads what one view wrote");
+            rig.store(&placed.buffer, placed.bias + 64, &[0x3c; 48]).unwrap();
+            assert!(same(two.add(offset as usize + 64), &[0x3c; 48]), "the GPU's write is seen through another view");
+            drop((placed, again));
+            title_memory_section_gone(handle as usize);
+            assert!(!SECTIONS.lock().unwrap().contains_key(&(handle as usize)), "forgotten with the section");
+            UnmapViewOfFile(windows_sys::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS { Value: one.cast() });
+            UnmapViewOfFile(windows_sys::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS { Value: two.cast() });
+            CloseHandle(handle);
+        }
     }
 
     /// The Windows 10 form ([`Opening::Region`], `ID3D12Device3` only) on the software

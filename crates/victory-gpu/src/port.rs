@@ -83,6 +83,9 @@ struct Region {
     start: u64,
     end: u64,
     heap: ID3D12Heap,
+    /// Where `start` lies in `heap`: 0 for a heap opened on a view of ours, the section
+    /// offset for the section opened whole ([`crate::inplace::committed_section_heap`]).
+    heap_offset: u64,
 }
 
 // SAFETY: D3D12 heaps are free-threaded.
@@ -161,7 +164,7 @@ pub(crate) fn place_in(device: &ID3D12Device, start: u64, len: u64) -> Result<Pl
         }
     };
     let region = &regions[i];
-    let buffer = crate::inplace::place(device, &region.heap, at - region.start, end - at).map_err(|e| (6, format!("no buffer placed in the region: {e}")))?;
+    let buffer = crate::inplace::place(device, &region.heap, region.heap_offset + (at - region.start), end - at).map_err(|e| (6, format!("no buffer placed in the region: {e}")))?;
     // SAFETY: a live buffer.
     let gpu = unsafe { buffer.GetGPUVirtualAddress() } + (start - at);
     Ok(Placed { buffer, heap: region.heap.clone(), gpu, bias: start - at })
@@ -190,6 +193,25 @@ fn open_region(device: &ID3D12Device, at: u64, end: u64) -> Result<Region, (usiz
     if first > at || first + bytes < end || offset % K64 != 0 {
         return Err((3, format!("the stretch {first:#x}+{bytes:#x} does not hold it")));
     }
+    // Without `ID3D12Device13` (Windows 10, Windows 11 21H2) no view can be opened: the
+    // section itself, if the runtime made it committed (`VICTORY_POOL_COMMIT=1`), opened
+    // whole once (`OpenExistingHeapFromFileMapping`), the stretch at its offset in it.
+    if crate::inplace::opening(device) != crate::inplace::Opening::Part {
+        return match crate::inplace::committed_section_heap(device, section) {
+            Ok(heap) => {
+                tracing::info!(
+                    start = format_args!("{first:#x}"),
+                    bytes,
+                    section = format_args!("{section:#x}"),
+                    offset = format_args!("{offset:#x}"),
+                    "renderer port 1: a stretch of the title's graphics memory placed in its section opened as a host heap"
+                );
+                Ok(Region { start: first, end: first + bytes, heap, heap_offset: offset })
+            }
+            Err(None) => Err((4, "no ID3D12Device13 here, and the section is not committed (VICTORY_POOL_COMMIT=1)".to_owned())),
+            Err(Some(e)) => Err((5, format!("the section refused by the host: {e}"))),
+        };
+    }
     // SAFETY: the section of a view the title has; the runtime keeps its
     // handle open while a view of it is there, and the range is inside it.
     let view = unsafe { mem::MapViewOfFile(section as _, mem::FILE_MAP_WRITE, (offset >> 32) as u32, offset as u32, bytes as usize) }.Value as usize;
@@ -216,7 +238,7 @@ fn open_region(device: &ID3D12Device, at: u64, end: u64) -> Result<Region, (usiz
             );
             // shortcut: the view stays mapped for good (the heap holds its
             // pages while anything names it).
-            Ok(Region { start: first, end: first + bytes, heap })
+            Ok(Region { start: first, end: first + bytes, heap, heap_offset: 0 })
         }
         Err(e) => {
             unmap();
