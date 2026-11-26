@@ -736,3 +736,80 @@ fn the_lanes_past_a_count_of_threads_do_not_run() {
         }
     }
 }
+
+/// 256 threads: four console waves in one group. Thread t (lane l = t & 63 of console wave
+/// t >> 6) holds the bit `1 << (l >> 1)`; the threads below s0 OR theirs over their console
+/// wave inside `if (t < s0) { ... }` and store it to dword t >> 6. With s0 between 64 and
+/// 192 one console wave takes the branch whole, one partly and the others skip it: a group
+/// barrier inside it would wait for waves that never come. The two host waves of each
+/// console wave meet by themselves instead (`lower::pair_meetings`), so the branch can be
+/// taken wave-wide in a group of several console waves.
+#[test]
+fn a_wave_or_inside_a_lane_branch_in_a_group_of_four_console_waves() {
+    let skip = 0xBF88_0000; // s_cbranch_execz
+    let mut words = vec![
+        0x3610_00BF, // v_and_b32 v8, 63, v0
+        0x2C12_0086, // v_lshrrev_b32 v9, 6, v0
+        0x3412_1282, // v_lshlrev_b32 v9, 2, v9
+        0x7E0A_0281, // v_mov_b32 v5, 1
+        0x2C0C_1081, // v_lshrrev_b32 v6, 1, v8
+        0x340E_0B06, // v_lshlrev_b32 v7, v6, v5
+        0x7D88_0000, // v_cmp_gt_u32 vcc, s0, v0
+        0xBE8C_246A, // s_and_saveexec_b64 s[12:13], vcc
+        skip | 23,   // the branch to the restore of EXEC
+    ];
+    words.extend_from_slice(&super::wave::WAVE_OR_V7_TO_S7);
+    words.extend_from_slice(&[
+        0x7E00_0207, // v_mov_b32 v0, s7
+        0x38 << 26 | 0x1C << 18 | 1 << 12,
+        0x80 << 24 | 2 << 16 | 9, // buffer_store_dword v0, v9, s[8:11], 0 offen
+        0xBEFE_040C, // s_mov_b64 exec, s[12:13]
+    ]);
+    let native = native_of(&words, true, 256);
+    let p = ir::build(&native.code, native.wave64, native.vgprs).expect("ir::build");
+    let branch = (0..p.blocks.len())
+        .find(|&b| p.blocks[b].insts.last().is_some_and(|i| i.name() == "s_cbranch_execz"))
+        .expect("the branch");
+    let wide = HashSet::from([branch]);
+    let shader = lowered(&native, &p, &wide).expect("lower");
+    if let Ok(mut v) = validator::Validator::load(validator::Validator::default_path().as_deref()) {
+        let mut copy = shader.dxil.clone();
+        v.validate(&mut copy).expect("DXIL validation failed");
+    }
+    let _one = super::valu_tests::ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(host) = Host::new(false) else {
+        eprintln!("no SM 6.6 hardware device; not run");
+        return;
+    };
+    let (root, pso) = match host.compute_pipeline(&shader) {
+        Ok(x) => x,
+        Err(e) => panic!("the hardware device refuses the program (waves of 64 asked for?): {e}"),
+    };
+    let expected = |below: u32, wave: u32| {
+        (0..64u32).filter(|l| wave * 64 + l < below).fold(0u32, |or, l| or | 1 << (l >> 1))
+    };
+    for below in [256u32, 200, 130, 100, 64, 33, 1, 0] {
+        let mut ud = vec![0u32; shader.user_data_dwords().max(1) as usize];
+        for u in &shader.user_data {
+            if let (RootType::Constants, 0, 0) = (u.root, u.slot, u.dword) {
+                ud[u.index as usize] = below;
+            }
+        }
+        let out = host
+            .dispatch(
+                &root,
+                &pso,
+                &Dispatch {
+                    roots: vec![(0, Root::Constants(ud))],
+                    views: &[View::RawUav(4)],
+                    samplers: &[],
+                    groups: [1, 1, 1],
+                },
+            )
+            .unwrap_or_else(|e| panic!("dispatch failed: {e}"));
+        for wave in 0..4u32 {
+            assert_eq!(out[0][wave as usize], expected(below, wave), "{below} threads in the branch, console wave {wave}");
+        }
+    }
+    eprintln!("ran on the hardware device: each console wave's OR, whichever waves took the branch");
+}

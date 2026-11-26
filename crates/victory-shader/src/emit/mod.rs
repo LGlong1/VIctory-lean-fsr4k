@@ -537,12 +537,19 @@ pub fn emit(
                 }
             }
         }
-        // Off unless asked for (`VICTORY_WAVE_WIDE=1`), for a console wave run as two host
-        // waves: this form puts group barriers inside branches and loops, and runs 121-124
-        // lost the card in a submission of two programs that had just moved to it
-        // (`ptfx_CS_lightAtlas_Sprite` and `_Trail`). The 32-lane programs' form below, which
-        // has no barrier, stays on.
-        let wide_on = std::env::var_os("VICTORY_WAVE_WIDE").is_some_and(|v| v == "1");
+        // Wave-wide branches for a console wave run as two host waves. With group barriers
+        // this form put barriers inside branches and loops, and runs 121-124 lost the card in
+        // a submission of two programs that had just moved to it (`ptfx_CS_lightAtlas_Sprite`
+        // and `_Trail`), so it was off unless asked for. Now its host waves meet by pairs
+        // (`lower::pair_meetings`, `lower::with_wide_meetings`), in groups of one console
+        // wave or several: no group barrier stands in a branch, and a meeting that went wrong
+        // gives up waiting instead of hanging the card (`bitcode::Module::lower_spins`). On by
+        // default with pair meetings; `VICTORY_WAVE_WIDE=0`: never, `=1`: always. The 32-lane
+        // programs' form below, which has no barrier, stays on.
+        let wide_on = match std::env::var_os("VICTORY_WAVE_WIDE") {
+            Some(v) => v == "1",
+            None => lower::pair_meetings(),
+        };
         // exact first: each host wave on its own where that is exact (the idiom, every
         // form; no barriers), then the other exact forms; then approximate
         for exact in [true, false] {
@@ -680,6 +687,9 @@ fn widen(
         // (a program whose waves are the host's meets no one: no barrier, any group)
         crate::native::StageIo::Cs(_) if !(native.wave64 && lower::host_max_wave() == 32) => {}
         crate::native::StageIo::Cs(cs) if cs.threads.iter().product::<u32>() == 64 => {}
+        // Several console waves: their host waves meet by pairs (`lower::pair_meetings`), not
+        // at group barriers, so a console wave may take a branch the others do not.
+        crate::native::StageIo::Cs(_) if lower::pair_meetings() => {}
         crate::native::StageIo::Cs(cs) => {
             if why {
                 eprintln!("WAVE64-WIDE not tried: thread groups of {:?}", cs.threads);
@@ -694,7 +704,11 @@ fn widen(
         let io = io::raise(p, native)?;
         let res = resource::track(p, &native.layout, native.stage, Some(&st))?;
         lower::take_needs();
-        let r = emit_program(c, native, p, &st, &io, &res);
+        let r = if lower::pair_meetings() {
+            lower::with_wide_meetings(|| emit_program(c, native, p, &st, &io, &res))
+        } else {
+            emit_program(c, native, p, &st, &io, &res)
+        };
         let needs = lower::take_needs();
         // (or translated for 64-lane waves still: shared memory read and written where not
         // every lane runs, whose blocks the lowering names too)

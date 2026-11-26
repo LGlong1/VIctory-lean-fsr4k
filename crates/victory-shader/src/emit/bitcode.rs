@@ -211,6 +211,9 @@ enum MdDef {
     Node(Vec<Option<Md>>),
 }
 
+/// The most reads a [`Module::spin_until`] loop makes before it gives up.
+pub(crate) const SPIN_MOST: u32 = 1 << 20;
+
 #[derive(Default)]
 pub(crate) struct Module {
     types: Vec<TypeDef>,
@@ -226,6 +229,9 @@ pub(crate) struct Module {
     named: Vec<(String, Vec<Md>)>,
     /// See [`Tag`]: by instruction.
     tags: HashMap<u32, Tag>,
+    /// Spins still to be made loops ([`Module::spin_until`]): the mark's
+    /// instruction, the pointer, the target.
+    spins: Vec<(u32, V, V)>,
 }
 
 impl Module {
@@ -498,6 +504,75 @@ impl Module {
     }
     pub fn terminate(&mut self, block: usize, t: Term) {
         self.blocks[block].term = Some(t);
+    }
+
+    /// A wait, where `block` stands now, until the `i32` at `ptr` (group-shared memory) is at
+    /// least `target` (unsigned), read by atomics. Straight-line until [`Module::lower_spins`]
+    /// makes it a loop, so whoever emits it may go on adding to `block` as before: what is
+    /// added after it runs after the wait.
+    pub fn spin_until(&mut self, block: usize, ptr: V, target: V) {
+        if let V::Inst(i) = self.bin(block, Bin::Or, target, target) {
+            self.spins.push((i, ptr, target));
+        }
+    }
+
+    /// Makes every [`Module::spin_until`] a loop: its block ends there and branches to a
+    /// block that reads the dword (an atomic OR of 0) until it reaches the target, then to a
+    /// block with the rest of the code and the old terminator; the successors' phis come
+    /// from that block now. Before the clean-up and the writing.
+    pub fn lower_spins(&mut self) {
+        if self.spins.is_empty() {
+            return;
+        }
+        let marks: HashMap<u32, (V, V)> = std::mem::take(&mut self.spins)
+            .into_iter()
+            .map(|(i, ptr, target)| (i, (ptr, target)))
+            .collect();
+        let mut b = 0;
+        while b < self.blocks.len() {
+            let Some(k) = self.blocks[b].body.iter().position(|i| marks.contains_key(i)) else {
+                b += 1;
+                continue;
+            };
+            let (ptr, target) = marks[&self.blocks[b].body[k]];
+            let tail = self.blocks[b].body.split_off(k + 1);
+            // (the mark: nothing reads it)
+            self.blocks[b].body.pop();
+            let term = self.blocks[b].term.take();
+            let (wait, rest) = (self.new_block(), self.new_block());
+            self.blocks[rest].body = tail;
+            self.blocks[rest].term = term;
+            let succs: Vec<usize> = match term {
+                Some(Term::Br(t)) => vec![t],
+                Some(Term::CondBr(_, t, f)) => vec![t, f],
+                _ => Vec::new(),
+            };
+            for s in succs {
+                for p in self.blocks[s].phis.clone() {
+                    if let Op::Phi(incoming) = &mut self.insts[p as usize].op {
+                        for e in incoming.iter_mut().filter(|e| e.1 == b) {
+                            e.1 = rest;
+                        }
+                    }
+                }
+            }
+            self.blocks[b].term = Some(Term::Br(wait));
+            let zero = self.i32(0);
+            let seen = self.atomic(wait, Rmw::Or, ptr, zero);
+            let there = self.cmp(wait, pred::IUGE, seen, target);
+            // A wait that never ends would lose the card (a timeout): after this many reads it
+            // gives up, and a meeting that went wrong costs wrong data instead.
+            let tries = self.phi(wait, self.type_of(zero));
+            let one = self.i32(1);
+            let next = self.bin(wait, Bin::Add, tries, one);
+            let most = self.i32(SPIN_MOST);
+            let enough = self.cmp(wait, pred::IUGE, next, most);
+            let done = self.bin(wait, Bin::Or, there, enough);
+            self.set_phi(tries, vec![(zero, b), (next, wait)]);
+            self.blocks[wait].term = Some(Term::CondBr(done, rest, wait));
+            // (`rest` is scanned in turn: it may hold another)
+            b += 1;
+        }
     }
 
     pub fn md_str(&mut self, s: &str) -> Md {

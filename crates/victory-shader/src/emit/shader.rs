@@ -555,6 +555,8 @@ impl Shader {
         }
         let ud_size = (self.user_data * 4).next_multiple_of(16);
         self.fix_user_data_size(ud_size);
+        // The halves' waits for each other become loops before anything looks at the blocks.
+        self.m.lower_spins();
         // The clean-up, before anything is declared about the code: a
         // feature whose last use it removed must not be declared (the
         // validator compares the flags with what the code uses).
