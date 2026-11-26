@@ -42,6 +42,18 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
 
 ## Done (session 1)
 
+- **avatarmanz main merged** (6d0ae9c1, 77 commits): renderer ports 5-7, their
+  wave32 work (28 programs left without a wave32 lowering), their switch-guarded
+  cool_fox ports (play.ps1 turns on the ones measured here: VICTORY_RESIDENCY,
+  VICTORY_FALLBACK_HEAPS, VICTORY_SWEEP_PER_HEAP, VICTORY_XMA_REFILL). Our
+  movie-plane uploads (they did not take them) kept on their texture.rs.
+- **Committed page pool** (911a57f9, `VICTORY_POOL_COMMIT=1`, off by default): the
+  title's 6.1 GiB pool made SEC_COMMIT, so view memory that is one run of the
+  section can be placed in place through the section
+  (`OpenExistingHeapFromFileMapping`, any Windows 10+), and **renderer port 1
+  works without ID3D12Device13** (the 185 MB constants heap in place on this
+  Windows 11 21H2).
+
 - **Windows 10 / 11 branch for title memory in place** (`inplace.rs`): the Windows
   build is read from the registry and logged; how memory is opened is decided by
   what the D3D12 runtime has (`Part` with `ID3D12Device13`, `Region` with only
@@ -112,9 +124,21 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
 6. Wave64 leftovers without pair meetings: 23 64-thread compute programs dropped
    ("no wave32 lowering"), the builder's 9.
 
+## Memory (Series S cutscene, `VICTORY_MEMORY_CATEGORIES=1`, overlapping)
+
+Private ~18.6 GB on a 24 GB PC: title window copies 3.8 GB (in PC memory; the
+GPU reads them over PCIe anyway), command-list growth 2.8-3.3 GB, our Rust heap
+1.5 GB, texture copies ~3.5 GB **in VRAM** (pool heaps are DEFAULT: not RAM). The
+title's own share is roughly 6-7 GB. Of ~800 windows a frame, only ~19 (88 MB)
+are one run of the pool: the rest are scattered over several views and still
+copied. Targets: (1) scattered windows (a placed buffer per run, or the
+64 KiB-directory addressing the ray-tracing path uses), (2) command-list growth,
+(3) the Rust heap.
+
 ## Plans (in order)
 
-1. Build 1005 (pair meetings opt-in), tests, retranslate, `warm --used --jobs 4`.
+1. Split the 2.8 -> 4.1 fps gain between the merge and the committed pool (A/B run
+   without `VICTORY_POOL_COMMIT`); if the pool holds, make it the default in play.ps1.
 2. Merge avatarmanz's 77 new commits (renderer ports 5-7: ~22 fps on Series S
    there; port 6 moves refresh planning and guard looks to helper threads; their
    own wave32 work; RAM-pressure caps). 61 conflict hunks in 16 files, mostly their
@@ -157,3 +181,6 @@ a time, use `warm --jobs 4`, and do not build while a run is going (RAM).
 | 2026-11-26 | 1005, Series S | opening cutscene | stable; median 336 ms (3.0 fps), best 206; preparing median 240 ms; 19.0 GB private, 22 MB free at worst |
 | 2026-11-26 | 1005, Series S, `VICTORY_INPLACE=1` | opening cutscene | in place refused (no ID3D12Device13 on build 22000); median 758 ms, paging (15 MB free) |
 | 2026-11-26 | 1005 + Region path, Series S, `VICTORY_INPLACE=1` | opening cutscene | opening=Region chosen; 0 windows in place (view memory); median 347 ms (2.9 fps), 19.3 GB private |
+| 2026-11-26 | 1006 merge, Series S, ports 1,2,5,6,7 | opening cutscene | median 362 ms (2.8 fps); port 1 and 5 nothing (no Device13) |
+| 2026-11-26 | + `VICTORY_POOL_COMMIT=1 VICTORY_INPLACE=1` | opening cutscene | **median 245 ms (4.1 fps), best 136 ms (7.3)**; 19 windows in place; 19.3 GB |
+| 2026-11-26 | + port 1 through the section | opening cutscene | median 244 ms (4.1 fps), best 202; port 1: 185 MB in place; watch 14-26 ms (was up to 1,170); 18.6 GB |
