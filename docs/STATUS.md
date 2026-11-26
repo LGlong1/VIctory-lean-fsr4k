@@ -42,6 +42,12 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
 
 ## Done (session 1)
 
+- **Windows 10 / 11 branch for title memory in place** (`inplace.rs`): the Windows
+  build is read from the registry and logged; how memory is opened is decided by
+  what the D3D12 runtime has (`Part` with `ID3D12Device13`, `Region` with only
+  `ID3D12Device3` = Windows 10 and Windows 11 21H2, else copies). GPU test on the
+  software adapter: `warp_windows_of_one_allocation_in_place_without_device13`.
+
 - Base: avatarmanz/VIctory-7900XTX, + Belobug 81ebb7b, + selected fxceless
   commits (see `docs/fxceless-merge-decisions.md`), + avatarmanz updates to afe6ea1.
 - `f5c60ea`: textures the title paints through another view (video planes) are
@@ -87,10 +93,14 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
    of the cutscene, frames of 2-7 s. Host copies of title memory 3.9 GB (2.8 GB
    "windows" outside buffers), shared buffers 4.1 GB, host textures 5.2 GB. First
    lever: `VICTORY_INPLACE=1` (windows opened in place, no copy: less memory, less
-   watching and copying) **does not work on this PC**: opening title memory in
-   place needs `ID3D12Device13` (`OpenExistingHeapFromAddress1`), which Windows 11
-   build 22000 (21H2) does not have (0x80004002, every window copied). A newer
-   Windows 11 (22H2+) would allow it. At a run's start only ~8 GB is free (Windows
+   watching and copying) now opens memory on every Windows: `inplace::opening`
+   picks `Part` (`ID3D12Device13`, recent Windows 11) or `Region` (`ID3D12Device3`:
+   Windows 10, and Windows 11 21H2 like this PC, which lacks Device13): the whole
+   allocation opened once and windows placed in it (`VICTORY_INPLACE_OPEN`,
+   `VICTORY_INPLACE_REGION_MB`). **But it saves nothing here**: the copied windows
+   (2.8-3 GB) are view memory (the title's page pool, sections), which stage 1 does
+   not open on any Windows; only a couple of private windows qualify. What would:
+   avatarmanz's renderer ports (the title's graphics heap in place). At a run's start only ~8 GB is free (Windows
    and other apps hold the rest); the game reaches 19 GB private even on Series S,
    so frames swing 0.2-1.8 s with paging and run-to-run comparisons are noisy.
 3. **CPU: preparing 140-350 ms a frame**, of it copies 40-120 ms (~100 MB),
@@ -105,7 +115,13 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
 ## Plans (in order)
 
 1. Build 1005 (pair meetings opt-in), tests, retranslate, `warm --used --jobs 4`.
-2. Memory first (it makes every other number noise here): find what of the 19 GB
+2. Merge avatarmanz's 77 new commits (renderer ports 5-7: ~22 fps on Series S
+   there; port 6 moves refresh planning and guard looks to helper threads; their
+   own wave32 work; RAM-pressure caps). 61 conflict hunks in 16 files, mostly their
+   switch-guarded ports of the same cool_fox commits we took: take theirs, turn on
+   by default what was verified here (movie-plane uploads). Then fxceless's 8
+   (card hashing -10 ms, flights -11.5 ms, texture checks on helpers -9 ms).
+3. Memory first (it makes every other number noise here): find what of the 19 GB
    is ours and can go (host copies 3.6 GB, shared buffers 5 GB made, upload buffers
    3.1 GB made, lists' growth 2.7 GB, host textures 5.2 GB).
 3. Guard pages for rarely written private memory (issue 1): the biggest CPU cost.
@@ -140,3 +156,4 @@ a time, use `warm --jobs 4`, and do not build while a run is going (RAM).
 | 2026-11-26 | 1003, Series S, `VICTORY_PAIR_MEET=0` | opening cutscene | lit; 2-3.5 fps, preparing 140-350 ms, watch 20-790 ms, 19-21 GB private |
 | 2026-11-26 | 1005, Series S | opening cutscene | stable; median 336 ms (3.0 fps), best 206; preparing median 240 ms; 19.0 GB private, 22 MB free at worst |
 | 2026-11-26 | 1005, Series S, `VICTORY_INPLACE=1` | opening cutscene | in place refused (no ID3D12Device13 on build 22000); median 758 ms, paging (15 MB free) |
+| 2026-11-26 | 1005 + Region path, Series S, `VICTORY_INPLACE=1` | opening cutscene | opening=Region chosen; 0 windows in place (view memory); median 347 ms (2.9 fps), 19.3 GB private |

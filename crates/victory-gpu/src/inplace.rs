@@ -118,16 +118,195 @@ pub(crate) struct Placed {
 /// with nothing if the memory is not private memory committed whole
 /// (nothing was asked of the host), with the host's error if it refused.
 pub(crate) fn place_part(device: &ID3D12Device, start: u64, len: u64) -> Result<Placed, Option<windows::core::Error>> {
+    place_in(device, opening(device), start, len)
+}
+
+/// [`place_part`] the way `how` says (tests ask for each).
+fn place_in(device: &ID3D12Device, how: Opening, start: u64, len: u64) -> Result<Placed, Option<windows::core::Error>> {
     let at = start & !(K64 as u64 - 1);
     let bytes = (start + len.max(1)).next_multiple_of(K64 as u64) - at;
-    if !private_whole(at as usize, bytes as usize) {
+    match how {
+        Opening::Part => {
+            if !private_whole(at as usize, bytes as usize) {
+                return Err(None);
+            }
+            let heap = open(device, From::Part(at as usize, bytes as usize)).map_err(Some)?;
+            let buffer = place(device, &heap, 0, bytes).map_err(Some)?;
+            // SAFETY: a live buffer.
+            let gpu = unsafe { buffer.GetGPUVirtualAddress() } + (start - at);
+            Ok(Placed { buffer, heap, gpu, bias: start - at })
+        }
+        Opening::Region => {
+            // The allocation that holds the window, opened whole once and kept: the window
+            // is a buffer placed at its offset there.
+            let Some((base, size)) = allocation_whole(at as usize) else {
+                return Err(None);
+            };
+            if (base + size) < (at + bytes) as usize || size as u64 > region_most() {
+                return Err(None);
+            }
+            let heap = region_heap(device, base, size)?;
+            let buffer = place(device, &heap, at - base as u64, bytes).map_err(Some)?;
+            // SAFETY: a live buffer.
+            let gpu = unsafe { buffer.GetGPUVirtualAddress() } + (start - at);
+            Ok(Placed { buffer, heap, gpu, bias: start - at })
+        }
+        Opening::None => Err(None),
+    }
+}
+
+/// How title memory is opened in place on this PC ([`opening`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Opening {
+    /// `ID3D12Device13::OpenExistingHeapFromAddress1`: any committed part of an
+    /// allocation (a recent Windows 11 with a D3D12 runtime that has it).
+    Part,
+    /// `ID3D12Device3::OpenExistingHeapFromAddress`: whole allocations only (Windows 10
+    /// 1709 and later; Windows 11 21H2, build 22000, has no `ID3D12Device13`). The
+    /// allocation that holds a window is opened once, at most [`region_most`] bytes of it,
+    /// and kept ([`region_heap`]); each window is a buffer placed in it. Opening pins the
+    /// whole allocation in the PC's memory.
+    Region,
+    /// Neither: copies, as before.
+    None,
+}
+
+/// The Windows build this runs on (22000 and later: Windows 11), from the registry;
+/// 0 if it cannot be read.
+pub(crate) fn windows_build() -> u32 {
+    use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+    static BUILD: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *BUILD.get_or_init(|| {
+        let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+        let (key, value) = (wide("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"), wide("CurrentBuildNumber"));
+        let mut buffer = [0u16; 32];
+        let mut bytes = size_of_val(&buffer) as u32;
+        // SAFETY: the names end in 0; the buffer and its size are ours.
+        let error = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                key.as_ptr(),
+                value.as_ptr(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                buffer.as_mut_ptr().cast(),
+                &mut bytes,
+            )
+        };
+        if error != 0 {
+            return 0;
+        }
+        let n = (bytes as usize / 2).min(buffer.len());
+        String::from_utf16_lossy(&buffer[..n]).trim_end_matches('\0').trim().parse().unwrap_or(0)
+    })
+}
+
+/// How this PC opens title memory in place, decided once by what its D3D12 runtime has
+/// (not by the Windows version alone: a newer runtime on an older Windows counts) and
+/// said in the log with the Windows it found. `VICTORY_INPLACE_OPEN=part|region|copy`
+/// forces one (a form the runtime lacks falls back to what it has).
+pub(crate) fn opening(device: &ID3D12Device) -> Opening {
+    static OPENING: std::sync::OnceLock<Opening> = std::sync::OnceLock::new();
+    *OPENING.get_or_init(|| {
+        let part = device.cast::<ID3D12Device13>().is_ok();
+        let region = device.cast::<ID3D12Device3>().is_ok();
+        let natural = if part {
+            Opening::Part
+        } else if region {
+            Opening::Region
+        } else {
+            Opening::None
+        };
+        let chosen = match std::env::var("VICTORY_INPLACE_OPEN").ok().as_deref().map(str::trim) {
+            Some("part") if part => Opening::Part,
+            Some("region") if region => Opening::Region,
+            Some("copy") => Opening::None,
+            _ => natural,
+        };
+        let build = windows_build();
+        let windows = match build {
+            0 => "unknown",
+            b if b >= 22000 => "11",
+            _ => "10",
+        };
+        tracing::info!(
+            windows,
+            build,
+            device13 = part,
+            device3 = region,
+            opening = ?chosen,
+            "title memory in place: how this PC opens it (Part: parts of an allocation; Region: whole allocations, Windows 10 and Windows 11 21H2; None: copies)"
+        );
+        chosen
+    })
+}
+
+/// The largest allocation [`Opening::Region`] opens whole, in bytes
+/// (`VICTORY_INPLACE_REGION_MB`, 1024): all of it is pinned in the PC's memory.
+fn region_most() -> u64 {
+    static MOST: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *MOST.get_or_init(|| std::env::var("VICTORY_INPLACE_REGION_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(1024) << 20)
+}
+
+/// The private allocation that holds `at`: its base and bytes, if every page of it is
+/// committed read-write private memory (what `OpenExistingHeapFromAddress` takes).
+fn allocation_whole(at: usize) -> Option<(usize, usize)> {
+    let query = |address: usize| {
+        // SAFETY: plain data filled in by the query.
+        let mut info: mem::MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: a valid out pointer of the right size.
+        let n = unsafe { mem::VirtualQuery(address as *const c_void, &mut info, size_of_val(&info)) };
+        (n != 0).then_some(info)
+    };
+    let base = query(at)?.AllocationBase as usize;
+    let mut next = base;
+    loop {
+        let Some(info) = query(next) else { break };
+        if info.AllocationBase as usize != base || info.State == mem::MEM_FREE {
+            break;
+        }
+        if info.State != mem::MEM_COMMIT || info.Type != mem::MEM_PRIVATE || info.Protect != mem::PAGE_READWRITE {
+            return None;
+        }
+        next = (info.BaseAddress as usize).saturating_add(info.RegionSize);
+    }
+    (next > base).then_some((base, next - base))
+}
+
+/// Allocations opened whole ([`Opening::Region`]), by base: the heap and its bytes.
+/// A heap lives on in the buffers placed in it after it leaves this table.
+static REGIONS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<usize, (ID3D12Heap, usize)>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Bytes of title memory pinned by the allocations in [`REGIONS`].
+static REGION_PINNED: AtomicU64 = AtomicU64::new(0);
+
+/// The heap of the allocation at `base` (`bytes` long), opened whole once.
+fn region_heap(device: &ID3D12Device, base: usize, bytes: usize) -> Result<ID3D12Heap, Option<windows::core::Error>> {
+    let mut regions = REGIONS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((heap, _)) = regions.get(&base) {
+        return Ok(heap.clone());
+    }
+    if REGION_PINNED.load(Ordering::Relaxed) + bytes as u64 > most() {
         return Err(None);
     }
-    let heap = open(device, From::Part(at as usize, bytes as usize)).map_err(Some)?;
-    let buffer = place(device, &heap, 0, bytes).map_err(Some)?;
-    // SAFETY: a live buffer.
-    let gpu = unsafe { buffer.GetGPUVirtualAddress() } + (start - at);
-    Ok(Placed { buffer, heap, gpu, bias: start - at })
+    let heap = open(device, From::Region(base)).map_err(Some)?;
+    REGION_PINNED.fetch_add(bytes as u64, Ordering::Relaxed);
+    regions.insert(base, (heap.clone(), bytes));
+    Ok(heap)
+}
+
+/// The allocations opened whole that overlap `[at, at + len)` leave [`REGIONS`] (opened
+/// anew when next asked for); what is placed in them is let go by the caller.
+fn regions_forget(at: usize, len: usize) {
+    let mut regions = REGIONS.lock().unwrap_or_else(|e| e.into_inner());
+    regions.retain(|&base, (_, bytes)| {
+        let keep = base.saturating_add(*bytes) <= at || at.saturating_add(len) <= base;
+        if !keep {
+            REGION_PINNED.fetch_sub(*bytes as u64, Ordering::Relaxed);
+        }
+        keep
+    });
 }
 
 /// Title memory `[start, start + len)` in place, for a window outside
@@ -191,6 +370,8 @@ pub(crate) fn gone(window: bool, bytes: u64) {
 pub fn title_memory_freeing(at: usize, len: usize) {
     // Renderer port 1's regions there: no longer what the title shows.
     crate::port::forget(at, len);
+    // Allocations opened whole there (`Opening::Region`): opened anew when next asked.
+    regions_forget(at, len);
     if STATS[0].load(Ordering::Relaxed) + STATS[2].load(Ordering::Relaxed) == 0 {
         return;
     }
@@ -1458,6 +1639,56 @@ pub(crate) mod tests {
         assert!(probe.section_reads && probe.section_writes, "a committed section in place");
         assert!(probe.section_outlives_views, "the section's heap does not depend on views");
         assert!(probe.reserved_section_refused, "a reserved section is refused");
+    }
+
+    /// The Windows 10 form ([`Opening::Region`], `ID3D12Device3` only) on the software
+    /// adapter: two windows of one allocation are buffers placed in the one heap the whole
+    /// allocation was opened as, at their offsets; the GPU reads each window's bytes and
+    /// its write lands at the title's address; the allocation is opened once, and
+    /// forgetting it takes it out of the table. Memory that is not committed whole is
+    /// turned down without asking the host.
+    #[test]
+    fn warp_windows_of_one_allocation_in_place_without_device13() {
+        let _turn = crate::indirect::tests::warp_turn();
+        let Some(device) = warp() else { return };
+        if device.cast::<ID3D12Device3>().is_err() {
+            return;
+        }
+        assert!(windows_build() > 0, "the Windows build is read from the registry");
+        // SAFETY: an allocation of the test's own.
+        unsafe {
+            let base = mem::VirtualAlloc(std::ptr::null(), 8 * K64, mem::MEM_RESERVE | mem::MEM_COMMIT | MEM_WRITE_WATCH, mem::PAGE_READWRITE).cast::<u8>();
+            assert_eq!(allocation_whole(base as usize + 3 * K64 + 5), Some((base as usize, 8 * K64)));
+            let (one, two) = (base as u64 + K64 as u64 + 0x1230, base as u64 + 5 * K64 as u64 + 0x40);
+            let first = place_in(&device, Opening::Region, one, 2 * K64 as u64 + 5).unwrap_or_else(|e| panic!("not placed: {e:?}"));
+            let second = place_in(&device, Opening::Region, two, 100).unwrap_or_else(|e| panic!("not placed: {e:?}"));
+            assert_eq!(first.heap.as_raw(), second.heap.as_raw(), "the allocation is opened once");
+            assert_eq!(first.bias, 0x1230);
+            assert_eq!(first.buffer.GetDesc().Width, 3 * K64 as u64, "the pages that hold the window");
+            let mut rig = Rig::new(&device).unwrap();
+            fill(one as *mut u8, 4096, 3);
+            fill(two as *mut u8, 100, 9);
+            let got = rig.fetch(&first.buffer, first.bias, 4096).unwrap();
+            assert!(same(one as *const u8, &got), "the GPU reads the first window's bytes");
+            let got = rig.fetch(&second.buffer, second.bias, 100).unwrap();
+            assert!(same(two as *const u8, &got), "the GPU reads the second window's bytes");
+            rig.store(&second.buffer, second.bias + 8, &[0x5a; 32]).unwrap();
+            assert!(same((two + 8) as *const u8, &[0x5a; 32]), "the GPU's write is at the title's address");
+            drop((first, second));
+            regions_forget(base as usize, 8 * K64);
+            assert!(!REGIONS.lock().unwrap().contains_key(&(base as usize)), "forgotten");
+            // A page of the allocation decommitted: the whole allocation is turned down.
+            let gone = (0..500).any(|_| {
+                let done = mem::VirtualFree(base.add(7 * K64).cast(), K64, mem::MEM_DECOMMIT) != 0;
+                if !done {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                done
+            });
+            assert!(gone, "the heap keeps the pages");
+            assert!(matches!(place_in(&device, Opening::Region, one, 100), Err(None)));
+            mem::VirtualFree(base.cast(), 0, mem::MEM_RELEASE);
+        }
     }
 
     /// Stage 1's own call on the software adapter: a title buffer that
