@@ -10,6 +10,33 @@ It is based on [HypeLobbiesHD/VIctory-RTX3060](https://github.com/HypeLobbiesHD/
 need your own copy of the game and build the executable yourself. It is not
 affiliated with or endorsed by the game's developer or publisher.
 
+
+## Provenance and credits
+
+This repository is a **fork of
+[HypeLobbiesHD/VIctory-RTX3060](https://github.com/HypeLobbiesHD/VIctory-RTX3060)**
+at commit `3abb527`. Everything in the tree that is not listed below is that
+fork's work and its upstreams': the lean windows, the residency budgets, the
+card-side buffer copies, the renderer ports, the loader, the D3D12 back end and
+the shader recompiler.
+
+The changes on top of `3abb527` are only these:
+
+* **FSR 4.1.2 at 4K** (`af7798b`), ported from
+  [avatarmanz/VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX)
+  commit `cd8dfc0` (by beloooo), which took it from
+  [DexNom/VIctory](https://github.com/DexNom/VIctory) `ab34a8b2`.
+* **`scripts/play-fsr4k.ps1` and the measured section of this README**
+  (`6633100`, `6b2d6aa`).
+
+The upstream chain is [Marvisak/VIctory](https://github.com/Marvisak/VIctory),
+[fxceless/victory-fork](https://github.com/fxceless/victory-fork), and the forks
+named under Credits at the end of this file. Ideas that came from Belobug,
+DexNom, myokex, Kelvaroq, codec-d and the Portwatch forks are credited there
+and in the commit messages; none of their code is claimed here.
+
+If you are one of those authors and something in this branch looks wrong,
+open an issue or a PR: corrections are welcome.
 ## Measured on an RX 6750 GRE 12 GB (Windows 10)
 
 Reference machine: Ryzen 5 5600X, 32 GB DDR4-3200, **RX 6750 GRE 12 GB** (RDNA2,
