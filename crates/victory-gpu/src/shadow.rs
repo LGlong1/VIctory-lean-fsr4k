@@ -186,6 +186,18 @@ pub(crate) fn lean_windows() -> bool {
     *ON.get_or_init(|| crate::switch::on("VICTORY_CARD_WINDOWS_LEAN") && cards() && crate::host::sends_own())
 }
 
+/// Whether title buffers whose copy is in the card's memory
+/// (`card_for`) keep no copy in the PC's memory either
+/// (`VICTORY_CARD_BUFFERS_LEAN=1`, off by default), as [`lean_windows`]
+/// does for windows: until shaders are declared to write one, or a pass
+/// looks at what they wrote, or undeclared stores are found in it, when its
+/// CPU side is filled from title memory and it is an ordinary copy in the
+/// card's memory from then on.
+pub(crate) fn lean_buffers() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::switch::on("VICTORY_CARD_BUFFERS_LEAN") && cards() && crate::host::sends_own())
+}
+
 /// What a copy in the card's memory ([`cards`]) has beside the buffer
 /// shaders see.
 struct Card {
@@ -4583,6 +4595,8 @@ impl Shadow {
     /// Shaders store in it what is not declared: from here on only the dwords
     /// the title changes go up ([`by_address`]).
     pub(crate) fn keep_stores(&self) {
+        // (Only what changed against the CPU side: a lean window needs one.)
+        self.unlean();
         self.changes_only.store(true, Ordering::Relaxed);
     }
 
@@ -4693,6 +4707,9 @@ impl Shadow {
     /// card's side before the submission's lists run. Without one (no
     /// memory) every piece of a declared range is fetched.
     pub(crate) fn card_make_before(&self, make: impl FnOnce(u64) -> Option<ID3D12Resource>) -> bool {
+        // (What the card wrote is then merged against the CPU side: a lean
+        // window needs one.)
+        self.unlean();
         let Some(card) = &self.card else {
             return false;
         };
@@ -5479,6 +5496,39 @@ fn lookup(address: u64, len: u64, any: bool) -> Option<Arc<Shadow>> {
         if !big && let Some(placed) = crate::inplace::place_for(key.0, len, false) {
             entry.shadow = Some(Arc::new(Shadow::placed(placed, key.0, len, false)));
             return entry.shadow.clone();
+        }
+        // Lean (`lean_buffers`): the card side only, and a CPU side that is
+        // a reservation until shaders are declared to write the buffer.
+        if lean_buffers()
+            && let Some(on_card) = card_for(size)
+        {
+            match Lean::new(size) {
+                Some(lean) => {
+                    crate::host::name(&on_card, || format!("title buffer {:#x}+{len:#x} on the card, lean", key.0));
+                    // SAFETY: a live buffer.
+                    let gpu = unsafe { on_card.GetGPUVirtualAddress() };
+                    let card = Card {
+                        // (Never copied from: the sends are the submission's own.)
+                        staging: on_card.clone(),
+                        before: Mutex::default(),
+                        dirty: Mutex::default(),
+                        sent: Mutex::default(),
+                        touched: Default::default(),
+                        size,
+                    };
+                    let mut shadow = Shadow::new(on_card, lean.memory, gpu, key.0, len);
+                    shadow.card = Some(card);
+                    shadow.lean = Some(lean);
+                    LEAN_BYTES.fetch_add(len, Ordering::Relaxed);
+                    let shadow = Arc::new(shadow);
+                    CARDED.lock().unwrap_or_else(|e| e.into_inner()).push(Arc::downgrade(&shadow));
+                    entry.shadow = Some(shadow);
+                    return entry.shadow.clone();
+                }
+                None => {
+                    CARD_BYTES[0].fetch_sub(size, Ordering::Relaxed);
+                }
+            }
         }
         let (buffer, data) = host()?.shared_buffer(size)?;
         crate::host::name(&buffer, || format!("title buffer {:#x}+{len:#x}", key.0));
