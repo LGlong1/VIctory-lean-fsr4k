@@ -84,7 +84,31 @@ Everything else in the tree is HypeLobbiesHD's and the upstream forks' work;
 see Credits.
 
 
-### Lighting: use the per-frame estimate, not the constant
+
+### On the RX 6750 GRE the fork's fast paths draw the character black
+
+Measured with the same save and spot: with `scripts\play.ps1`'s defaults (it
+sets `VICTORY_THIN=1`, `VICTORY_JOIN_PARTS=8`) the character's face and some
+materials render black on this card, at 16-19 fps. Turning THIN off alone
+(`VICTORY_THIN=0`: 14 fps) does not fix it; the whole fast path has to go.
+`-Safe` renders everything correctly at 10-11 fps.
+
+The profile this repository recommends on RDNA2 is `-Safe` plus the renderer
+ports and the window group, which was verified correct and measured at **12
+fps** with FSR `quality`:
+
+```powershell
+scripts\play.ps1 -Exe <...> -Safe -More @{
+    VICTORY_FSR_4K='quality'; VICTORY_FIDELITYFX_DIR=<signedbin>
+    VICTORY_AMBIENT='0.8'; VICTORY_AMBIENT_AIR='0'
+    VICTORY_PORT_GUARD='1'; VICTORY_PORT_JOURNAL='1'; VICTORY_PORT_DESCRIPTORS='1'
+    VICTORY_INPLACE='1'; VICTORY_LIST_LAZY='1'; VICTORY_WINDOW_EXACT='1'; VICTORY_CARD_WINDOWS_LEAN='1'
+    VICTORY_UNDER_WIDE='1'; VICTORY_LAND_ECHO='1'; VICTORY_UPLOAD_AHEAD='1'
+}
+```
+
+On NVIDIA (the base fork's own target) neither of these was needed; the
+defaults there were developed and measured by HypeLobbiesHD.### Lighting: use the per-frame estimate, not the constant
 
 `scripts\play.ps1` sets `VICTORY_AMBIENT=constant:0.8` and
 `VICTORY_AMBIENT_AIR=1.5`. On the reference machine that renders night scenes
