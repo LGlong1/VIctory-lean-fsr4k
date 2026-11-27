@@ -1,37 +1,88 @@
-# VIctory on an RTX 3060
+# VIctory on an RTX 3060 (lean fork) with FSR 4.1.2 at 4K
 
 A fork of [VIctory](https://github.com/Marvisak/VIctory), a compatibility layer
-that runs an Xbox Series title natively on Windows from files the user supplies,
-tuned for an **NVIDIA GeForce RTX 3060 12 GB** on a mid-range PC.
+that runs an Xbox Series title natively on Windows from files the user supplies.
+It is based on [HypeLobbiesHD/VIctory-RTX3060](https://github.com/HypeLobbiesHD/VIctory-RTX3060)
+(lean windows, residency budgets, card-side copies, renderer ports), with FSR
+4.1.2 at 4K added and measured on an AMD RDNA2 card.
 
+**This repository contains no game files, code or assets, and no binaries.** You
+need your own copy of the game and build the executable yourself. It is not
+affiliated with or endorsed by the game's developer or publisher.
 
-## FSR 4.1.2 at 4K (this branch) — **AMD only**
+## Measured on an RX 6750 GRE 12 GB (Windows 10)
 
-Ported from [avatarmanz/VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX)
-(`cd8dfc0`, itself from DexNom/VIctory `ab34a8b2`). It patches the title's
-Series X SDR 4K profile and serves its FidelityFX calls from AMD's **signed PC**
-`amd_fidelityfx_upscaler_dx12.dll` (FidelityFX SDK 2.4.0) instead of the
-console one: `provider="4.1.2"`, 2560x1440 rendered, 3840x2160 output.
+Reference machine: Ryzen 5 5600X, 32 GB DDR4-3200, **RX 6750 GRE 12 GB** (RDNA2,
+driver 32.0.21045.16010), Windows 10 22H2. Frame rates are read from the
+title's window title in a city street; each row's draw count is in the table.
 
-> **NVIDIA users: leave FSR off.** `VICTORY_FSR_4K` is unset by default and
-> must stay that way on NVIDIA: the PC upscaler is AMD's and FSR4 needs AMD's
-> driver path. `scripts\play.ps1` (and the README's runs above) are NVIDIA
-> profiles and do not set it. Passing `-More @{VICTORY_FSR_4K='quality'}` on an
-> NVIDIA card is not supported and will fail to create the upscaler context.
+| Run | Settings | Draws | Frame rate |
+|---|---|---|---|
+| this fork's defaults, no FSR | `scripts\play.ps1` | 2.7k-6.7k | **16-19 fps** |
+| FSR 4.1.2 `quality` (1440p rendered, 3840x2160 out) | `scripts\play-fsr4k.ps1 -Preset quality` | 3.5k-5.4k | **15.6-16.8 fps** |
+| clean clone of this repository, FSR `quality` | as documented below | 3.3k-4.3k | **16-19 fps**, five minutes, no device removal |
 
-Measured here (Ryzen 5 5600X, 32 GB DDR4, **RX 6750 GRE 12 GB** RDNA2,
-Windows 10 22H2, driver 32.0.21045.16010), this fork's defaults plus the
-switch:
+Memory: 24-25 GB private at peak; 2.3 GB of the title's buffers live in the
+card's memory (464 copies). Heavy moments (about 9k draws) drop to 5 fps for a
+frame or two.
 
-| Run | Frame rate |
+The render resolution barely moves the frame rate on this machine: the layer is
+CPU-bound (about 100 ms preparing a frame) and the card finishes behind the
+relay. That is why FSR 4K costs so little here compared with the fork's own
+1080p-class output.
+
+### Configuration used
+
+This fork's `scripts\play.ps1` defaults, unchanged: `VICTORY_RELAY=2`,
+`VICTORY_CARD_STEPS=2`, `VICTORY_INPLACE=1`, `VICTORY_CARD_REHASH_RUNS=1`,
+`VICTORY_RESIDENCY=1`, `VICTORY_FALLBACK_HEAPS=1`, `VICTORY_SWEEP_PER_HEAP=1`,
+`VICTORY_XMA_REFILL=1`, `VICTORY_LIST_LAZY=1`, `VICTORY_WINDOW_EXACT=1`,
+`VICTORY_PORT_CONSTANTS=1`, `VICTORY_PORT_DESCRIPTORS=1`, `VICTORY_PORT_CBV=1`,
+`VICTORY_PORT_GUARD=1`, `VICTORY_PORT_JOURNAL=1`, `VICTORY_CARD_WINDOWS_LEAN=1`.
+The FSR rows add `VICTORY_FSR_4K=quality` and `VICTORY_FIDELITYFX_DIR` pointing
+at AMD's `signedbin` folder.
+
+### What this branch adds
+
+* **FSR 4.1.2 at 4K** (`af7798b`), ported from
+  [avatarmanz/VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX)
+  `cd8dfc0` (which took it from DexNom/VIctory `ab34a8b2`). It patches the
+  title's Series X SDR 4K profile and serves its FidelityFX calls from AMD's
+  signed PC `amd_fidelityfx_upscaler_dx12.dll` (FidelityFX SDK 2.4.0) instead of
+  the console one: `provider="4.1.2"`, 2560x1440 rendered, 3840x2160 output.
+* **Docs and a launcher** (`6633100`): this section, the requirements below and
+  `scripts/play-fsr4k.ps1`.
+
+Everything else in the tree is HypeLobbiesHD's and the upstream forks' work;
+see Credits.
+
+### Requirements
+
+| | |
 |---|---|
-| this fork's defaults, no FSR | 16-19 fps |
-| FSR 4.1.2 `quality` (1440p rendered, 4K out) | 15.6-16.8 fps |
-| the same, `balanced` / `performance` | not measured here |
+| executable | build it: `cargo build --release --locked -p victory`. No binaries are stored here |
+| Windows 10 **and** 11 | put `D3D12Core.dll` 1.620.2 (Microsoft's Agility SDK, redistributable) in `target\release\D3D12\` beside the executable. It exports `D3D12SDKVersion`, so without that folder the device fails with **0x887E0003** on either Windows version |
+| FSR 4K | an AMD GPU, and AMD's signed `amd_fidelityfx_upscaler_dx12.dll` from the FidelityFX SDK 2.4.0 `signedbin` folder (not stored here) |
+| NVIDIA | **leave FSR off**: do not set `VICTORY_FSR_4K`. The base fork was developed on an RTX 3060, so the rest runs there |
 
-No device removal in five-minute runs. The render resolution barely moves the
-frame rate: on this machine the layer is CPU-bound and the card finishes
-behind the relay.
+### Clean-clone check
+
+A fresh `git clone` of this repository built with `cargo build --release
+--locked -p victory` in 1 m 06 s, and `scripts\play-fsr4k.ps1 -Preset quality`
+then ran for five minutes in the world without a device removal: 16-19 fps,
+`provider="4.1.2"`, 2560x1440 rendered to 3840x2160 (the third row above).
+
+### Limits and open things
+
+* One machine only (the reference above), Windows 10. Nothing here was tried on
+  Windows 11, on NVIDIA, or with ray tracing enabled.
+* FSR4 is a temporal upscaler: at 15-19 fps moving edges can ghost, and 4K
+  output changes the UI's size. Compare `-Preset quality`, `balanced` and
+  `performance` before keeping one.
+* A preset's first run compiles its own pipelines; frames before that are
+  slower.
+* The base fork's own notes (NVIDIA RTX 3060, Series S, 30 fps memory goals) are
+  still below in this README.
 
 ## How to run with FSR 4K
 
@@ -44,16 +95,12 @@ behind the relay.
    ```
    or set the two variables the layer reads: `VICTORY_FSR_4K=quality` and
    `VICTORY_FIDELITYFX_DIR=<folder>`.
-3. Windows 10 also needs the D3D12 Agility runtime beside the executable:
+3. Windows 10 and 11 both need the D3D12 Agility runtime beside the executable:
    `target\release\D3D12\D3D12Core.dll` 1.620.2 (Microsoft's redistributable;
    see `apps/victory/src/agility.rs`).
 
 `-Preset balanced` renders 2258x1270 and `performance` 1920x1080, both at 4K
-out. A preset's first run compiles its own pipelines: the frames before that
-are slower.
-
-FSR4 is a temporal upscaler: at these frame rates moving edges can ghost, and
-4K output changes the UI's size. Try `-Preset` and compare before keeping it.
+out.
 ## The goal
 
 **Ray tracing off: a stable 30 fps in 8-10 GB of RAM first.** Then lower frame
