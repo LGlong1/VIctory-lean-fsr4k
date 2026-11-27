@@ -938,3 +938,81 @@ mod tests {
         }
     }
 }
+
+/// Whether the card's own heaps cost the PC's memory on this driver: blocks
+/// as the texture pool makes them, the process's private bytes before and
+/// after (`cargo test -p victory-gpu --lib -- --ignored default_heaps_cost`).
+/// Run map-nopool-1126-222702 found the textures' memory write-combined in
+/// our address space on an RTX 3060 with the card 6 of 11 GB full.
+#[cfg(test)]
+mod card_heap_cost {
+    use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_12_0;
+    use windows::Win32::Graphics::Direct3D12::*;
+    use windows::Win32::Graphics::Dxgi::*;
+    use windows::core::Interface;
+
+    fn private() -> u64 {
+        use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let mut c = PROCESS_MEMORY_COUNTERS { cb: size_of::<PROCESS_MEMORY_COUNTERS>() as u32, ..Default::default() };
+        // SAFETY: our own process and a sized structure.
+        unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
+        c.PagefileUsage as u64
+    }
+
+    #[test]
+    #[ignore = "a measurement on the real card"]
+    fn default_heaps_cost() {
+        // SAFETY: plain DXGI and D3D12 creation.
+        unsafe {
+            let factory: IDXGIFactory4 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)).unwrap();
+            let adapter: IDXGIAdapter = factory.EnumAdapters(0).unwrap();
+            let mut device: Option<ID3D12Device> = None;
+            D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_12_0, &mut device).unwrap();
+            let device = device.unwrap();
+            let device3: ID3D12Device3 = device.cast().unwrap();
+            for (name, flags, resident) in [
+                ("plain", D3D12_HEAP_FLAG_NONE, false),
+                ("not resident, made resident", D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT, true),
+            ] {
+                let before = private();
+                let mut heaps = Vec::new();
+                for _ in 0..16 {
+                    let desc = D3D12_HEAP_DESC {
+                        SizeInBytes: super::BLOCK,
+                        Properties: D3D12_HEAP_PROPERTIES { Type: D3D12_HEAP_TYPE_DEFAULT, ..Default::default() },
+                        Alignment: 0,
+                        Flags: D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES | flags,
+                    };
+                    let mut heap: Option<ID3D12Heap> = None;
+                    device.CreateHeap(&desc, &mut heap).unwrap();
+                    let heap = heap.unwrap();
+                    if resident {
+                        let fence: ID3D12Fence = device.CreateFence(0, D3D12_FENCE_FLAG_NONE).unwrap();
+                        let page: ID3D12Pageable = heap.cast().unwrap();
+                        device3.EnqueueMakeResident(D3D12_RESIDENCY_FLAG_NONE, &[Some(page)], &fence, 1).unwrap();
+                        while fence.GetCompletedValue() < 1 {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                    }
+                    heaps.push(heap);
+                }
+                let after = private();
+                let info = adapter.cast::<IDXGIAdapter3>().unwrap();
+                let mut local = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+                let mut shared = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+                info.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut local).unwrap();
+                info.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &mut shared).unwrap();
+                println!(
+                    "{name}: 16 heaps of 64 MiB: private {} MB -> {} MB (+{} MB); card in use {} MB, shared in use {} MB",
+                    before >> 20,
+                    after >> 20,
+                    (after.saturating_sub(before)) >> 20,
+                    local.CurrentUsage >> 20,
+                    shared.CurrentUsage >> 20
+                );
+                drop(heaps);
+            }
+        }
+    }
+}

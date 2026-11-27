@@ -3871,11 +3871,15 @@ fn late_line(frames: f64) {
             let t: Vec<f64> = send::STATS.iter().map(|r| r.swap(0, Ordering::Relaxed) as f64 / frames).collect();
             tracing::info!(
                 "bytes of submissions' own sent up per frame (VICTORY_SEND_OWN): {:.1} MB in {:.0} runs, {:.0} words in scatters; {:.2} ms \
-                 taking them out of the CPU sides",
+                 taking them out of the CPU sides; {:.1} MB of lean windows from title memory (VICTORY_CARD_WINDOWS_LEAN: \
+                 {:.0} MB of windows lean, {} filled for shader writes)",
                 t[0] / (1 << 20) as f64,
                 t[1],
                 t[2],
                 t[3] / 1000.0,
+                t[4] / (1 << 20) as f64,
+                crate::shadow::LEAN_BYTES.load(Ordering::Relaxed) as f64 / (1 << 20) as f64,
+                crate::shadow::UNLEANED[0].load(Ordering::Relaxed),
             );
         }
         let t: Vec<f64> = torn::STATS.iter().map(|r| r.swap(0, Ordering::Relaxed) as f64 / frames).collect();
@@ -3942,6 +3946,12 @@ mod panel;
 mod place;
 pub(crate) mod rec;
 mod send;
+
+/// Whether what goes up to copies in the card's memory is the submission's
+/// own (`send::own`, `VICTORY_SEND_OWN`).
+pub(crate) fn sends_own() -> bool {
+    send::own()
+}
 mod upq;
 pub(crate) use send::{goes_as_words, words_under};
 #[cfg(feature = "diagnostics")]
@@ -4591,7 +4601,7 @@ impl Host {
                         let sides: Vec<_> = dirty.iter().map(|(shadow, _)| shadow.card_sides()).collect();
                         let mut ranges: Vec<upq::Range<'_>> = Vec::new();
                         for ((shadow, rs), side) in dirty.iter().zip(&sides) {
-                            if let Some((staging, _, _)) = side {
+                            if let Some((staging, _, _)) = side.as_ref().filter(|_| !shadow.is_lean()) {
                                 ranges.extend(rs.iter().map(|&(a, b)| (&shadow.buffer, a as u64, *staging, (b - a) as u64)));
                             }
                         }
@@ -4605,6 +4615,14 @@ impl Host {
                             continue;
                         };
                         if own.is_none() && up.is_none() {
+                            if shadow.is_lean() {
+                                // (Its CPU side holds nothing: the pages go up
+                                // with the next submission's own memory.)
+                                for &(a, b) in ranges {
+                                    shadow.resend(a, b);
+                                }
+                                continue;
+                            }
                             for &(a, b) in ranges {
                                 list.CopyBufferRegion(&shadow.buffer, a as u64, staging, a as u64, (b - a) as u64);
                             }

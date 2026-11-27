@@ -678,7 +678,7 @@ fn memory_categories() -> bool {
 
 /// Asks which of the pages in `asked` (address, answer) are in physical
 /// memory and adds the bytes each stands for (kind, bytes) to its kind.
-fn in_memory(asked: &mut Vec<[usize; 2]>, stands: &mut Vec<(usize, u64)>, present: &mut [u64; 10]) {
+fn in_memory(asked: &mut Vec<[usize; 2]>, stands: &mut Vec<(usize, u64)>, present: &mut [u64]) {
     use windows_sys::Win32::System::ProcessStatus::K32QueryWorkingSetEx;
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
     // SAFETY: our own process; `asked` holds that many entries of two
@@ -858,6 +858,101 @@ fn log_memory_map() {
         biggest.len(),
         groups.len(),
         biggest.join("; ")
+    );
+    // Private committed memory by where it lies (64 GiB bands of the
+    // address space) and its 30 biggest allocations: the kinds above take
+    // everything under 1 TiB for the title's, and the host's allocations
+    // lie there too on some runs (all 18.6 GB of private memory was "the
+    // title's heaps" in run map-1126-221621).
+    let mut bands: std::collections::BTreeMap<usize, u64> = std::collections::BTreeMap::new();
+    let mut private: HashMap<usize, (u64, u32)> = HashMap::new();
+    for r in regions.iter().filter(|r| r.3 && r.4 != MEM_IMAGE && r.4 != MEM_MAPPED) {
+        *bands.entry(r.1 >> 36).or_default() += r.2 as u64;
+        let e = private.entry(r.0).or_insert((0, r.5));
+        e.0 += r.2 as u64;
+        e.1 |= r.5;
+    }
+    let bands: Vec<String> =
+        bands.iter().filter(|b| *b.1 >= 64 << 20).map(|(b, bytes)| format!("{:#x}: {} MB", b << 36, bytes >> 20)).collect();
+    let mut private: Vec<(usize, (u64, u32))> = private.into_iter().collect();
+    private.sort_by_key(|p| std::cmp::Reverse(p.1.0));
+    // Totals by write-combined or not and by the allocation's whole size,
+    // with what of each is in physical memory (one page in sixteen asked).
+    // On this NVIDIA driver the card's own heaps are committed private
+    // memory of the process too, write-combined and not in physical memory
+    // (`pool::card_heap_cost`): private bytes count the card's memory twice.
+    let class_of = |base: usize, protect: u32| -> usize {
+        let size = whole.get(&base).copied().unwrap_or(0) as u64;
+        let class = match size {
+            s if s < 1 << 20 => 0,
+            s if s < 4 << 20 => 1,
+            s if s <= 4 << 20 => 2,
+            s if s < 64 << 20 => 3,
+            s if s <= 64 << 20 => 4,
+            s if s < 1 << 30 => 5,
+            _ => 6,
+        };
+        class + if protect & PAGE_WRITECOMBINE != 0 { 7 } else { 0 }
+    };
+    let mut sums = [(0u64, 0u64); 14];
+    for &(base, (bytes, protect)) in &private {
+        let c = class_of(base, protect);
+        sums[c].0 += 1;
+        sums[c].1 += bytes;
+    }
+    let mut resident = [0u64; 14];
+    {
+        let protects: HashMap<usize, u32> = private.iter().map(|&(b, (_, p))| (b, p)).collect();
+        let mut asked: Vec<[usize; 2]> = Vec::with_capacity(4096);
+        let mut stands: Vec<(usize, u64)> = Vec::with_capacity(4096);
+        for r in regions.iter().filter(|r| r.3 && r.4 != MEM_IMAGE && r.4 != MEM_MAPPED) {
+            let c = class_of(r.0, protects.get(&r.0).copied().unwrap_or(r.5));
+            let mut offset = 0;
+            while offset < r.2 {
+                asked.push([r.1 + offset, 0]);
+                stands.push((c, STEP.min(r.2 - offset) as u64));
+                if asked.len() == 4096 {
+                    in_memory(&mut asked, &mut stands, &mut resident);
+                }
+                offset += STEP;
+            }
+        }
+        if !asked.is_empty() {
+            in_memory(&mut asked, &mut stands, &mut resident);
+        }
+    }
+    const CLASSES: [&str; 7] = ["< 1 MiB", "1-4 MiB", "4 MiB", "4-64 MiB", "64 MiB", "64 MiB-1 GiB", "1 GiB+"];
+    let sums: Vec<String> = (0..14)
+        .filter(|&c| sums[c].0 > 0)
+        .map(|c| {
+            format!(
+                "{}{}: {} allocations {} MB ({} MB in memory)",
+                if c >= 7 { "write-combined " } else { "" },
+                CLASSES[c % 7],
+                sums[c].0,
+                sums[c].1 >> 20,
+                resident[c] >> 20
+            )
+        })
+        .collect();
+    tracing::info!("memory map, private committed by allocation size: {}", sums.join("; "));
+    let top: Vec<String> = private
+        .iter()
+        .take(30)
+        .map(|&(base, (bytes, protect))| {
+            format!(
+                "{base:#x} {} MB of {} MB{}",
+                bytes >> 20,
+                whole.get(&base).copied().unwrap_or(0) >> 20,
+                if protect & PAGE_WRITECOMBINE != 0 { " write-combined" } else { "" }
+            )
+        })
+        .collect();
+    tracing::info!(
+        "memory map, private committed by 64 GiB band: {}; the 30 biggest of {} allocations: {}",
+        bands.join(", "),
+        private.len(),
+        top.join("; ")
     );
 }
 

@@ -187,8 +187,9 @@ pub(super) fn give_back(memory: Memory) {
 }
 
 /// Since the last frame-rate line: bytes copied, runs copied, words stored,
-/// microseconds of taking them out of the CPU sides.
-pub(super) static STATS: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+/// microseconds of taking them out of the CPU sides, bytes of lean windows
+/// taken from title memory (`crate::shadow::lean_windows`).
+pub(super) static STATS: [std::sync::atomic::AtomicU64; 5] = [const { std::sync::atomic::AtomicU64::new(0) }; 5];
 
 /// One copy's sends: ranges copied (offset in the copy, in the memory,
 /// bytes), and its pairs (where in the memory, how many).
@@ -214,10 +215,15 @@ pub(super) fn take(host: &Host, dirty: &[(std::sync::Arc<Shadow>, Vec<(usize, us
     pass(host)?;
     // Runs of whole words of the copy: only those are pairs. (A byte beside
     // them in a word may be the card's.)
-    let short = |&(a, b): &(usize, usize)| short(a, b - a);
+    // A lean window's bytes come from title memory, through the kernel, and
+    // never as pairs (`crate::shadow::lean_windows`). Asked once here, as
+    // it may end meanwhile.
+    let lean: Vec<bool> = dirty.iter().map(|(shadow, _)| shadow.is_lean()).collect();
+    let short_in = |lean: bool, &(a, b): &(usize, usize)| !lean && short(a, b - a);
     let mut at = 0u64;
     let mut copies = Vec::with_capacity(dirty.len());
-    for (_, ranges) in dirty {
+    for ((_, ranges), &lean) in dirty.iter().zip(&lean) {
+        let short = |r: &(usize, usize)| short_in(lean, r);
         let mut runs = Vec::new();
         for &(a, b) in ranges.iter().filter(|r| !short(r)) {
             runs.push((a, at, b - a));
@@ -232,14 +238,20 @@ pub(super) fn take(host: &Host, dirty: &[(std::sync::Arc<Shadow>, Vec<(usize, us
     }
     let memory = memory(host, at)?;
     let mut moves: Vec<(usize, usize, usize)> = Vec::new();
+    let mut from_title: Vec<(usize, usize, usize)> = Vec::new();
     let mut work: Vec<(usize, &[(usize, usize)], usize)> = Vec::new();
-    for ((shadow, ranges), copy) in dirty.iter().zip(&copies) {
+    for (((shadow, ranges), copy), &lean) in dirty.iter().zip(&copies).zip(&lean) {
+        if lean {
+            let from = shadow.span().0 as usize;
+            from_title.extend(copy.runs.iter().map(|&(a, to, n)| (from + a, memory.data + to as usize, n)));
+            continue;
+        }
         let from = shadow.card_data() as usize;
         moves.extend(copy.runs.iter().map(|&(a, to, n)| (from + a, memory.data + to as usize, n)));
         // (80,000 runs of some words a frame: in pieces of work.)
         let mut to = memory.data + copy.pairs.0 as usize;
         for ranges in ranges.chunks(RUNS_AT_A_TIME) {
-            let words: usize = ranges.iter().filter(|r| short(r)).map(|r| (r.1 - r.0) / 4).sum();
+            let words: usize = ranges.iter().filter(|r| short_in(false, r)).map(|r| (r.1 - r.0) / 4).sum();
             if words > 0 {
                 work.push((from, ranges, to));
                 to += words * 8;
@@ -249,7 +261,7 @@ pub(super) fn take(host: &Host, dirty: &[(std::sync::Arc<Shadow>, Vec<(usize, us
     let one = |i: usize| {
         let (from, ranges, to) = work[i];
         let mut to = to as *mut [u32; 2];
-        for &(a, b) in ranges.iter().filter(|r| short(r)) {
+        for &(a, b) in ranges.iter().filter(|r| short_in(false, r)) {
             for offset in (a..b).step_by(4) {
                 // SAFETY: inside the copy's mapping (its CPU side, which
                 // the thread that asked, and waits, alone writes in these
@@ -268,6 +280,11 @@ pub(super) fn take(host: &Host, dirty: &[(std::sync::Arc<Shadow>, Vec<(usize, us
     STATS[1].fetch_add(moves.len() as u64, Ordering::Relaxed);
     STATS[2].fetch_add(copies.iter().map(|c| u64::from(c.pairs.1)).sum(), Ordering::Relaxed);
     crate::shadow::copy_all(moves);
+    // (Pages not there read as zeros.)
+    STATS[4].fetch_add(from_title.iter().map(|m| m.2 as u64).sum(), Ordering::Relaxed);
+    for (src, dst, n) in from_title {
+        crate::host::copy_mapped(dst as *mut u8, src as *const u8, n, false);
+    }
     STATS[3].fetch_add(began.elapsed().as_micros() as u64, Ordering::Relaxed);
     Some(Own { memory, copies, used: at })
 }

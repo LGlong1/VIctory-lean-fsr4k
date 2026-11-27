@@ -102,6 +102,67 @@ pub(crate) struct Shadow {
     /// and the bytes from the buffer's first byte to `start` (the heap
     /// begins on a 64 KiB line; a title buffer need not).
     place: Option<(windows::Win32::Graphics::Direct3D12::ID3D12Heap, u64)>,
+    /// A window with only its card side ([`lean_windows`]): `data` is
+    /// memory of the process nothing writes while the window is lean, and
+    /// what refreshes find written goes up from title memory itself.
+    lean: Option<Lean>,
+}
+
+/// The CPU side of a lean window ([`lean_windows`]): committed memory of the
+/// process that nothing writes while `on` holds, so its pages stay out of
+/// physical memory. Filled from title memory, and `on` cleared, the first
+/// time shaders are declared to write the window ([`Shadow::unlean`]): from
+/// then on it is the CPU side of a window in the card's memory as any.
+struct Lean {
+    memory: *mut u8,
+    on: std::sync::atomic::AtomicBool,
+    /// Held while the window is filled and `on` cleared.
+    turning: Mutex<()>,
+}
+
+// SAFETY: `memory` is the process's own allocation, freed once in `drop`;
+// what reads and writes it is the window's, under its rules.
+unsafe impl Send for Lean {}
+// SAFETY: as above.
+unsafe impl Sync for Lean {}
+
+impl Lean {
+    fn new(len: u64) -> Option<Lean> {
+        use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc};
+        // SAFETY: a fresh allocation of ours.
+        let memory = unsafe { VirtualAlloc(std::ptr::null(), len as usize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) };
+        (!memory.is_null()).then(|| Lean { memory: memory.cast(), on: true.into(), turning: Mutex::new(()) })
+    }
+}
+
+impl Drop for Lean {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Memory::{MEM_RELEASE, VirtualFree};
+        // SAFETY: our allocation, released once.
+        unsafe { VirtualFree(self.memory.cast(), 0, MEM_RELEASE) };
+    }
+}
+
+/// Whether windows outside buffers that go to the card's memory
+/// (`VICTORY_CARD_WINDOWS_MB`, 6144 if not given with this) keep no copy in
+/// the PC's memory (`VICTORY_CARD_WINDOWS_LEAN=1`, off by default; needs
+/// `VICTORY_SEND_OWN`, on by default).
+///
+/// A window's copy was a buffer of the PC's memory the card reads over the
+/// bus, the whole of it in physical memory: ~3 GB of the opening cutscene's
+/// (run map4-1126-223207: 4 MiB allocations 1.8 GB and 4-64 MiB 2.8 GB, all
+/// in memory), the biggest part of the PC's memory that is ours. Lean, a
+/// window has its card side only; a refresh notes the pages the title wrote
+/// (no compare: there is nothing to compare with) and the submission's own
+/// memory takes them from title memory itself, through the kernel (pages
+/// not there read as zeros), when it is prepared, as it takes the CPU
+/// sides' bytes otherwise. Shaders are not declared to write windows
+/// (run 91, and every run since: "0.0 MB compared in 0 ranges of windows");
+/// one that is gets its CPU side filled then and is an ordinary window in
+/// the card's memory from there on.
+pub(crate) fn lean_windows() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::switch::on("VICTORY_CARD_WINDOWS_LEAN") && cards() && crate::host::sends_own())
 }
 
 /// What a copy in the card's memory ([`cards`]) has beside the buffer
@@ -474,12 +535,23 @@ fn card_room_for(size: u64) -> Option<ID3D12Resource> {
 fn window_card_most() -> u64 {
     static MOST: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *MOST.get_or_init(|| {
-        std::env::var("VICTORY_CARD_WINDOWS_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(0) << 20
+        std::env::var("VICTORY_CARD_WINDOWS_MB")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(if lean_windows() { 6144 } else { 0 })
+            << 20
     })
 }
 
 /// Bytes alive of windows' card sides ([`window_card_most`]).
 static WINDOW_CARD_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// Bytes alive of lean windows ([`lean_windows`]), whether still lean or not.
+pub(crate) static LEAN_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// Lean windows that were filled because shaders were declared to write
+/// them ([`Shadow::unlean`]), and their bytes, since the start.
+pub(crate) static UNLEANED: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 
 /// A buffer in the card's memory for a window of `size` bytes, if it is to
 /// be there ([`window_card_most`]).
@@ -2660,6 +2732,9 @@ impl Drop for Shadow {
             KEPT_BYTES.fetch_sub(self.len, Ordering::Relaxed);
         }
         let window = self.window;
+        if self.lean.is_some() {
+            LEAN_BYTES.fetch_sub(self.len, Ordering::Relaxed);
+        }
         if self.mapped {
             WINDOW_MAPPED_BYTES.fetch_sub(self.len, Ordering::Relaxed);
         }
@@ -3252,6 +3327,7 @@ impl Shadow {
             changes_only: Default::default(),
             mapped: false,
             place: None,
+            lean: None,
         }
     }
 
@@ -3280,6 +3356,7 @@ impl Shadow {
         if self.place.is_some() {
             return;
         }
+        self.unlean();
         self.written.store(true, Ordering::Relaxed);
         let len = len.min(self.left(address));
         list.defer_gpu_write(self, address as usize, len as usize);
@@ -4332,6 +4409,12 @@ impl Shadow {
     /// Copies title memory `[from, to)` (inside the buffer) into the copy;
     /// `known`: the copy held it before ([`send_changed`]).
     fn take(&self, from: usize, to: usize, known: bool) -> usize {
+        if self.is_lean() {
+            let start = self.start as usize;
+            self.card_changed(from - start, to - start);
+            SEND[0].fetch_add((to - from) as u64, Ordering::Relaxed);
+            return to - from;
+        }
         thread_local! {
             /// A page of title memory, as read.
             static TITLE: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -4383,6 +4466,13 @@ impl Shadow {
     fn copy(&self, from: usize, to: usize) -> usize {
         let (start, end) = (self.start as usize, (self.start + self.len) as usize);
         let (from, to) = (from.max(start), to.min(end));
+        if self.is_lean() {
+            if from < to {
+                self.changed(from - start, to - start);
+                self.card_changed(from - start, to - start);
+            }
+            return to.saturating_sub(from);
+        }
         // SAFETY: inside the mapping (`from` and `to` are within the buffer).
         let at = unsafe { self.data.add(from - start) };
         if self.card.is_some() && from < to && crate::host::upcheck::on() {
@@ -4405,6 +4495,37 @@ impl Shadow {
     /// ([`cards`]).
     pub(crate) fn carded(&self) -> bool {
         self.card.is_some()
+    }
+
+    /// Whether this is a lean window that is lean still ([`lean_windows`]):
+    /// its sends come from title memory, not from `data`.
+    pub(crate) fn is_lean(&self) -> bool {
+        self.lean.as_ref().is_some_and(|l| l.on.load(Ordering::Acquire))
+    }
+
+    /// A lean window becomes an ordinary one in the card's memory: its CPU
+    /// side is filled from title memory (pages not there as zeros), then it
+    /// is lean no more. What refreshes noted meanwhile goes up as before.
+    fn unlean(&self) {
+        let Some(lean) = &self.lean else {
+            return;
+        };
+        if !lean.on.load(Ordering::Acquire) {
+            return;
+        }
+        let _turning = lean.turning.lock().unwrap_or_else(|e| e.into_inner());
+        if !lean.on.load(Ordering::Acquire) {
+            return;
+        }
+        crate::host::copy_mapped(self.data, self.start as *const u8, self.len as usize, false);
+        lean.on.store(false, Ordering::Release);
+        UNLEANED[0].fetch_add(1, Ordering::Relaxed);
+        UNLEANED[1].fetch_add(self.len, Ordering::Relaxed);
+        tracing::info!(
+            start = format_args!("{:#x}", self.start),
+            len = self.len,
+            "a lean window is written by shaders: its CPU side is filled, and it is an ordinary window on the card now"
+        );
     }
 
     /// Shaders store in it what is not declared: from here on only the dwords
@@ -4430,6 +4551,11 @@ impl Shadow {
             return;
         };
         let most = runs.size_hint().0;
+        // Lean, the sends come from title memory a page at a time at the
+        // least: never runs of a few words (pairs read words, unguarded).
+        let lean = self.is_lean();
+        let len = self.len as usize;
+        let runs = runs.map(|(a, b)| if lean { ((a / PAGE) * PAGE, b.next_multiple_of(PAGE).min(len)) } else { (a, b) });
         let mut runs = runs.filter(|r| r.0 < r.1).peekable();
         if runs.peek().is_none() {
             return;
@@ -4463,6 +4589,7 @@ impl Shadow {
             return;
         }
         let bytes = &bytes[self.start as usize + from - address..][..to - from];
+        self.unlean();
         let _merging = self.merging.write().unwrap_or_else(|e| e.into_inner());
         if self.card.is_some() {
             // SAFETY: inside the mapping of the CPU's side, in a range no
@@ -5676,6 +5803,40 @@ fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Sha
         note(&shadow);
         map.insert((start, len), shadow.clone());
         return Some(shadow);
+    }
+    // Lean: the card side only, and a CPU side nothing writes.
+    if lean_windows()
+        && let Some(on_card) = window_room_for(len)
+    {
+        match Lean::new(len) {
+            Some(lean) => {
+                crate::host::name(&on_card, || format!("title memory {start:#x}+{len:#x} on the card, lean"));
+                // SAFETY: a live buffer.
+                let gpu = unsafe { on_card.GetGPUVirtualAddress() };
+                let card = Card {
+                    // (Never copied from: the sends are the submission's own.)
+                    staging: on_card.clone(),
+                    before: Mutex::default(),
+                    dirty: Mutex::default(),
+                    sent: Mutex::default(),
+                    touched: Default::default(),
+                    size: len,
+                };
+                let mut shadow = Shadow::new(on_card, lean.memory, gpu, start, len);
+                shadow.window = true;
+                shadow.card = Some(card);
+                shadow.lean = Some(lean);
+                LEAN_BYTES.fetch_add(len, Ordering::Relaxed);
+                let shadow = Arc::new(shadow);
+                CARDED.lock().unwrap_or_else(|e| e.into_inner()).push(Arc::downgrade(&shadow));
+                note(&shadow);
+                map.insert((start, len), shadow.clone());
+                return Some(shadow);
+            }
+            None => {
+                WINDOW_CARD_BYTES.fetch_sub(len, Ordering::Relaxed);
+            }
+        }
     }
     let (buffer, data) = host()?.shared_buffer(len)?;
     crate::host::name(&buffer, || format!("title memory {start:#x}+{len:#x}"));
