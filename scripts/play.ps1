@@ -36,9 +36,12 @@ $settings = @{
     VICTORY_INPLACE = '1'; VICTORY_LIST_LAZY = '1'; VICTORY_WINDOW_EXACT = '1'
     VICTORY_PORT_CONSTANTS = '1'; VICTORY_PORT_DESCRIPTORS = '1'; VICTORY_PORT_CBV = '1'
     VICTORY_PORT_GUARD = '1'; VICTORY_PORT_JOURNAL = '1'
+    # Windows of title memory with their card side only (shadow.rs lean_windows): ~2.3 GB less
+    # in physical memory, 2 GB more free at worst, frames faster in both pairs (STATUS.md).
+    VICTORY_CARD_WINDOWS_LEAN = '1'
 }
 if ($Safe) {
-    foreach ($k in 'VICTORY_POOL_COMMIT', 'VICTORY_INPLACE', 'VICTORY_LIST_LAZY', 'VICTORY_WINDOW_EXACT', 'VICTORY_PORT_CONSTANTS', 'VICTORY_PORT_DESCRIPTORS', 'VICTORY_PORT_CBV', 'VICTORY_PORT_GUARD', 'VICTORY_PORT_JOURNAL') { $settings.Remove($k) }
+    foreach ($k in 'VICTORY_POOL_COMMIT', 'VICTORY_INPLACE', 'VICTORY_LIST_LAZY', 'VICTORY_WINDOW_EXACT', 'VICTORY_PORT_CONSTANTS', 'VICTORY_PORT_DESCRIPTORS', 'VICTORY_PORT_CBV', 'VICTORY_PORT_GUARD', 'VICTORY_PORT_JOURNAL', 'VICTORY_CARD_WINDOWS_LEAN') { $settings.Remove($k) }
     $settings.VICTORY_UNDER_WIDE = '0'; $settings.VICTORY_LAND_ECHO = '0'
 } else {
     $settings.VICTORY_THIN = '1'; $settings.VICTORY_JOIN_PARTS = '8'; $settings.VICTORY_UPLOAD_AHEAD = '1'

@@ -108,9 +108,8 @@ pub(crate) struct Shadow {
     lean: Option<Lean>,
 }
 
-/// The CPU side of a lean window ([`lean_windows`]): committed memory of the
-/// process that nothing writes while `on` holds, so its pages stay out of
-/// physical memory. Filled from title memory, and `on` cleared, the first
+/// The CPU side of a lean window ([`lean_windows`]): memory of the process
+/// reserved only, which nothing reads or writes while `on` holds. Filled from title memory, and `on` cleared, the first
 /// time shaders are declared to write the window ([`Shadow::unlean`]): from
 /// then on it is the CPU side of a window in the card's memory as any.
 struct Lean {
@@ -118,6 +117,12 @@ struct Lean {
     on: std::sync::atomic::AtomicBool,
     /// Held while the window is filled and `on` cleared.
     turning: Mutex<()>,
+    /// The pages of 4 KiB refreshes read from title memory and that have not
+    /// gone up yet, by offset: read where a refresh reads them, as for any
+    /// copy, so the submission's own memory only copies them (reads of
+    /// title memory in its taking, through the kernel, made the write
+    /// watch's askings 5-10 times slower, runs x-lean-*).
+    pending: Mutex<std::collections::HashMap<usize, Box<[u8]>>>,
 }
 
 // SAFETY: `memory` is the process's own allocation, freed once in `drop`;
@@ -127,11 +132,27 @@ unsafe impl Send for Lean {}
 unsafe impl Sync for Lean {}
 
 impl Lean {
+    /// Reserved only: committed when the window stops being lean
+    /// ([`Lean::commit`]). Committed from the start, 3 GB of lean windows
+    /// were 3 GB more of the PC's commit (peak private 21.4-22.2 GB against
+    /// 18.5-18.7 GB, runs x-lean-*), though none of it was in memory.
     fn new(len: u64) -> Option<Lean> {
-        use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc};
-        // SAFETY: a fresh allocation of ours.
-        let memory = unsafe { VirtualAlloc(std::ptr::null(), len as usize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) };
-        (!memory.is_null()).then(|| Lean { memory: memory.cast(), on: true.into(), turning: Mutex::new(()) })
+        use windows_sys::Win32::System::Memory::{MEM_RESERVE, PAGE_READWRITE, VirtualAlloc};
+        // SAFETY: a fresh reservation of ours.
+        let memory = unsafe { VirtualAlloc(std::ptr::null(), len as usize, MEM_RESERVE, PAGE_READWRITE) };
+        (!memory.is_null()).then(|| Lean {
+            memory: memory.cast(),
+            on: true.into(),
+            turning: Mutex::new(()),
+            pending: Mutex::default(),
+        })
+    }
+
+    /// Commits the reservation; whether it is.
+    fn commit(&self, len: u64) -> bool {
+        use windows_sys::Win32::System::Memory::{MEM_COMMIT, PAGE_READWRITE, VirtualAlloc};
+        // SAFETY: inside our reservation.
+        !unsafe { VirtualAlloc(self.memory.cast(), len as usize, MEM_COMMIT, PAGE_READWRITE) }.is_null()
     }
 }
 
@@ -4411,6 +4432,7 @@ impl Shadow {
     fn take(&self, from: usize, to: usize, known: bool) -> usize {
         if self.is_lean() {
             let start = self.start as usize;
+            self.lean_hold(from - start, to - start);
             self.card_changed(from - start, to - start);
             SEND[0].fetch_add((to - from) as u64, Ordering::Relaxed);
             return to - from;
@@ -4468,6 +4490,7 @@ impl Shadow {
         let (from, to) = (from.max(start), to.min(end));
         if self.is_lean() {
             if from < to {
+                self.lean_hold(from - start, to - start);
                 self.changed(from - start, to - start);
                 self.card_changed(from - start, to - start);
             }
@@ -4503,6 +4526,29 @@ impl Shadow {
         self.lean.as_ref().is_some_and(|l| l.on.load(Ordering::Acquire))
     }
 
+    /// Lean: the pages of 4 KiB that hold offsets `[from, to)` are read from
+    /// title memory into [`Lean::pending`] (pages not there as zeros).
+    fn lean_hold(&self, from: usize, to: usize) {
+        let Some(lean) = &self.lean else {
+            return;
+        };
+        let (start, len) = (self.start as usize, self.len as usize);
+        let mut page = (from / KERNEL_PAGE) * KERNEL_PAGE;
+        while page < to.min(len) {
+            let n = KERNEL_PAGE.min(len - page);
+            let mut bytes = vec![0u8; n].into_boxed_slice();
+            crate::host::copy_mapped(bytes.as_mut_ptr(), (start + page) as *const u8, n, false);
+            lean.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(page, bytes);
+            page += KERNEL_PAGE;
+        }
+    }
+
+    /// Lean: the bytes of the page of 4 KiB at `page` (an offset) a refresh
+    /// read and that have not gone up yet, taken.
+    pub(crate) fn lean_take(&self, page: usize) -> Option<Box<[u8]>> {
+        self.lean.as_ref()?.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&page)
+    }
+
     /// A lean window becomes an ordinary one in the card's memory: its CPU
     /// side is filled from title memory (pages not there as zeros), then it
     /// is lean no more. What refreshes noted meanwhile goes up as before.
@@ -4516,6 +4562,12 @@ impl Shadow {
         let _turning = lean.turning.lock().unwrap_or_else(|e| e.into_inner());
         if !lean.on.load(Ordering::Acquire) {
             return;
+        }
+        if !lean.commit(self.len) {
+            crate::host::fail(format_args!(
+                "a lean window shaders write needs {} MB of the PC's commit for its CPU side, and there is none                  (VICTORY_CARD_WINDOWS_LEAN=0 runs without lean windows)",
+                self.len >> 20
+            ));
         }
         crate::host::copy_mapped(self.data, self.start as *const u8, self.len as usize, false);
         lean.on.store(false, Ordering::Release);
@@ -4555,7 +4607,9 @@ impl Shadow {
         // least: never runs of a few words (pairs read words, unguarded).
         let lean = self.is_lean();
         let len = self.len as usize;
-        let runs = runs.map(|(a, b)| if lean { ((a / PAGE) * PAGE, b.next_multiple_of(PAGE).min(len)) } else { (a, b) });
+        let runs = runs.map(|(a, b)| {
+            if lean { ((a / KERNEL_PAGE) * KERNEL_PAGE, b.next_multiple_of(KERNEL_PAGE).min(len)) } else { (a, b) }
+        });
         let mut runs = runs.filter(|r| r.0 < r.1).peekable();
         if runs.peek().is_none() {
             return;

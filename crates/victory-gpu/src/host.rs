@@ -3884,13 +3884,14 @@ fn late_line(frames: f64) {
             let t: Vec<f64> = send::STATS.iter().map(|r| r.swap(0, Ordering::Relaxed) as f64 / frames).collect();
             tracing::info!(
                 "bytes of submissions' own sent up per frame (VICTORY_SEND_OWN): {:.1} MB in {:.0} runs, {:.0} words in scatters; {:.2} ms \
-                 taking them out of the CPU sides; {:.1} MB of lean windows from title memory (VICTORY_CARD_WINDOWS_LEAN: \
+                 taking them out of the CPU sides; {:.1} MB of lean windows from title memory ({:.2} MB read at the taking; VICTORY_CARD_WINDOWS_LEAN: \
                  {:.0} MB of windows lean, {} filled for shader writes)",
                 t[0] / (1 << 20) as f64,
                 t[1],
                 t[2],
                 t[3] / 1000.0,
                 t[4] / (1 << 20) as f64,
+                t[5] / (1 << 20) as f64,
                 crate::shadow::LEAN_BYTES.load(Ordering::Relaxed) as f64 / (1 << 20) as f64,
                 crate::shadow::UNLEANED[0].load(Ordering::Relaxed),
             );

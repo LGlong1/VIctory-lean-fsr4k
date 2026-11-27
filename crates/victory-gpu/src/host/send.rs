@@ -188,8 +188,9 @@ pub(super) fn give_back(memory: Memory) {
 
 /// Since the last frame-rate line: bytes copied, runs copied, words stored,
 /// microseconds of taking them out of the CPU sides, bytes of lean windows
-/// taken from title memory (`crate::shadow::lean_windows`).
-pub(super) static STATS: [std::sync::atomic::AtomicU64; 5] = [const { std::sync::atomic::AtomicU64::new(0) }; 5];
+/// taken from title memory (`crate::shadow::lean_windows`), of them read
+/// at the taking (no refresh held them).
+pub(super) static STATS: [std::sync::atomic::AtomicU64; 6] = [const { std::sync::atomic::AtomicU64::new(0) }; 6];
 
 /// One copy's sends: ranges copied (offset in the copy, in the memory,
 /// bytes), and its pairs (where in the memory, how many).
@@ -238,12 +239,13 @@ pub(super) fn take(host: &Host, dirty: &[(std::sync::Arc<Shadow>, Vec<(usize, us
     }
     let memory = memory(host, at)?;
     let mut moves: Vec<(usize, usize, usize)> = Vec::new();
-    let mut from_title: Vec<(usize, usize, usize)> = Vec::new();
+    // (A lean window's index in `dirty`, the offset in it, where in the
+    // memory, bytes.)
+    let mut from_title: Vec<(usize, usize, usize, usize)> = Vec::new();
     let mut work: Vec<(usize, &[(usize, usize)], usize)> = Vec::new();
-    for (((shadow, ranges), copy), &lean) in dirty.iter().zip(&copies).zip(&lean) {
+    for (i, (((shadow, ranges), copy), &lean)) in dirty.iter().zip(&copies).zip(&lean).enumerate() {
         if lean {
-            let from = shadow.span().0 as usize;
-            from_title.extend(copy.runs.iter().map(|&(a, to, n)| (from + a, memory.data + to as usize, n)));
+            from_title.extend(copy.runs.iter().map(|&(a, to, n)| (i, a, memory.data + to as usize, n)));
             continue;
         }
         let from = shadow.card_data() as usize;
@@ -280,10 +282,35 @@ pub(super) fn take(host: &Host, dirty: &[(std::sync::Arc<Shadow>, Vec<(usize, us
     STATS[1].fetch_add(moves.len() as u64, Ordering::Relaxed);
     STATS[2].fetch_add(copies.iter().map(|c| u64::from(c.pairs.1)).sum(), Ordering::Relaxed);
     crate::shadow::copy_all(moves);
-    // (Pages not there read as zeros.)
-    STATS[4].fetch_add(from_title.iter().map(|m| m.2 as u64).sum(), Ordering::Relaxed);
-    for (src, dst, n) in from_title {
-        crate::host::copy_mapped(dst as *mut u8, src as *const u8, n, false);
+    // A page a read at the most, as a refresh reads title memory: a read
+    // over a hole fails whole and is done again region by region, asking
+    // Windows (which holds what the write watch's askings wait for: the
+    // first lean run's watch time went from ~15 to 170-470 ms a frame with
+    // reads of whole runs, on one thread). Pages not there read as zeros.
+    // The pages a refresh read for them (`Shadow::lean_take`); one no
+    // refresh holds (sent before, noted again) is read now.
+    STATS[4].fetch_add(from_title.iter().map(|m| m.3 as u64).sum(), Ordering::Relaxed);
+    const PAGE: usize = 4096;
+    for (i, a, dst, n) in from_title {
+        let shadow = &dirty[i].0;
+        let title = shadow.span().0 as usize;
+        let mut at = a;
+        while at < a + n {
+            let page = (at / PAGE) * PAGE;
+            let m = (page + PAGE).min(a + n) - at;
+            let to = dst + (at - a);
+            match shadow.lean_take(page) {
+                Some(bytes) if bytes.len() >= at - page + m => {
+                    // SAFETY: inside the memory (room for the run) and the page's bytes.
+                    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr().add(at - page), to as *mut u8, m) };
+                }
+                _ => {
+                    STATS[5].fetch_add(m as u64, Ordering::Relaxed);
+                    crate::host::copy_mapped(to as *mut u8, (title + at) as *const u8, m, false);
+                }
+            }
+            at += m;
+        }
     }
     STATS[3].fetch_add(began.elapsed().as_micros() as u64, Ordering::Relaxed);
     Some(Own { memory, copies, used: at })

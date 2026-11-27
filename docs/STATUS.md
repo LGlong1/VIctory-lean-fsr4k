@@ -126,6 +126,22 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
   until the peak is well under the free RAM; the 8 GB of texture copies and pool and the
   3 GB of window copies are what is big enough to matter.
 
+- **What is really in the PC's memory** (memory map with physical pages, `VICTORY_MEMORY_MAP=6`):
+  on this NVIDIA driver the card's own heaps are committed private memory of the process too
+  (16 heaps of 64 MiB: +1,026 MB private, nothing in physical memory; `pool::card_heap_cost`), so
+  "19 GB private" counts the ~5 GB of textures on the card. In physical memory: ~15 GB, of which
+  the title's own heaps and page pool ~8.4 GB, ours ~6.3 GB (window copies ~3 GB the biggest,
+  our Rust heap ~1.2 GB, write-combined upload memory ~1.5 GB).
+- **Lean windows** (`VICTORY_CARD_WINDOWS_LEAN=1`, now play.ps1's default): windows of title
+  memory keep only their card side; a refresh reads the pages the title wrote into a pending
+  store and the submission's own memory takes them from there. A: 5.7 / 4.7 fps, B: 5.1 / 4.2;
+  preparing 105 / 143 against 155 / 202 ms; lowest free 3.05-3.13 GB against 1.0-1.4 GB; 4 MiB
+  allocations in memory 47 MB against 1.8 GB. Write-watch askings 11-39 ms a frame against 5-9
+  (reads through the kernel in the taking made them 40-190: moved into the refresh). The CPU side
+  is a reservation, committed only if shaders are ever declared to write the window (none so far).
+- Belobug#443's xmem change (pages already showing what is asked are not mapped again,
+  `VICTORY_MAP_SAME=0` as before) and #413 (zero only what no run covers) taken.
+
 ## Done (session 1)
 
 - **avatarmanz main merged** (6d0ae9c1, 77 commits): renderer ports 5-7, their
@@ -334,3 +350,4 @@ a time, use `warm --jobs 4`, and do not build while a run is going (RAM).
 | 2026-11-26 | batch, `VICTORY_WINDOWS_BAR_MB=4096 VICTORY_WINDOWS_BAR_PCT=97`, A B A B | opening cutscene | **`card memory the CPU maps supported=false`**: nothing moved (window copies 3.1 GB either way). Identical code ran 637 / 314 / 168 / 232 ms median: frame rate follows free RAM at worst (47 MB -> 1.6 fps, 1,104 MB -> 6.0 fps) |
 | 2026-11-26 | + thin LTO, x86-64-v3 (Marvisak#3011), A B A B against the batch | opening cutscene | 164 / 465 ms without, 500 / 369 ms with: noise (lowest free 50-385 MB). Kept: standard settings, tests pass |
 | 2026-11-26 | + Belobug#373 #374, `VICTORY_SEND_SPARE_MB=128 VICTORY_SCRATCH_SPARE_MB=32 VICTORY_READ_KEEP_MB=16 VICTORY_STAGING_IDLE_MS=10000`, A B A B | opening cutscene | peak **18.2-18.3 GB with, 18.5-18.8 without** (~0.4 GB); frames 425 / 1,676 ms with, 274 / 614 without (worse in both pairs); lowest free RAM no better. Left off (unset = as before) |
+| 2026-11-26 | lean windows, A B A B (`x-lean3-*`) | opening cutscene | **5.7 / 4.7 fps lean, 5.1 / 4.2 without**; lowest free 3.1 GB against 1.0-1.4; peak private 18.7-19.4 GB both |
