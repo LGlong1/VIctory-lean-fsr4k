@@ -69,57 +69,42 @@ This fork's `scripts\play.ps1` defaults, unchanged: `VICTORY_RELAY=2`,
 The FSR rows add `VICTORY_FSR_4K=quality` and `VICTORY_FIDELITYFX_DIR` pointing
 at AMD's `signedbin` folder.
 
-### What this branch adds
+### What we changed, and what we found
 
-* **FSR 4.1.2 at 4K** (`af7798b`), ported from
-  [avatarmanz/VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX)
-  `cd8dfc0` (which took it from DexNom/VIctory `ab34a8b2`). It patches the
-  title's Series X SDR 4K profile and serves its FidelityFX calls from AMD's
-  signed PC `amd_fidelityfx_upscaler_dx12.dll` (FidelityFX SDK 2.4.0) instead of
-  the console one: `provider="4.1.2"`, 2560x1440 rendered, 3840x2160 output.
-* **Docs and a launcher** (`6633100`): this section, the requirements below and
-  `scripts/play-fsr4k.ps1`.
+**Ported:** FSR 4.1.2 at 4K (`af7798b`), from
+[avatarmanz/VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX)
+`cd8dfc0` (which took it from [DexNom/VIctory](https://github.com/DexNom/VIctory)
+`ab34a8b2`). It patches the title's Series X SDR 4K profile and serves its
+FidelityFX calls from AMD's signed PC `amd_fidelityfx_upscaler_dx12.dll`
+(FidelityFX SDK 2.4.0): `provider="4.1.2"`, 2560x1440 rendered, 3840x2160 out.
 
-Everything else in the tree is HypeLobbiesHD's and the upstream forks' work;
-see Credits.
+**Added:** `scripts/play-fsr4k.ps1` and this README's measured sections
+(`6633100`, `6b2d6aa`, `2ee782f`).
 
+**Found by bisection on an RX 6750 GRE 12 GB (Windows 10 22H2, driver
+32.0.21045.16010), one run per setting group, the same save and spot:**
 
+* `VICTORY_CARD_WINDOWS_LEAN=1` (on in `scripts\play.ps1`) renders the
+  character's face and some materials **black** on this card. Turning it off
+  alone restores the picture at 15 fps with FSR `quality`.
+  - The renderer ports (`PORT_GUARD`, `PORT_JOURNAL`, `PORT_DESCRIPTORS`,
+    `PORT_CONSTANTS`, `PORT_CBV`), the window group (`INPLACE`, `LIST_LAZY`,
+    `WINDOW_EXACT`) and `UNDER_WIDE`/`LAND_ECHO`/`UPLOAD_AHEAD` each kept the
+    picture correct in their runs.
+  - `VICTORY_THIN=0` alone did **not** fix it (14 fps, still black with LEAN
+    on); `-Safe` looked correct only because it also turns LEAN off, and it
+    gives up the rest of the fast path for that (10-11 fps).
+* `VICTORY_AMBIENT=constant:0.8` + `VICTORY_AMBIENT_AIR=1.5` (also from
+  `play.ps1`) leaves night scenes with the character and lit railings too dark
+  next to the newer avatarmanz builds; `VICTORY_AMBIENT=0.8` and
+  `VICTORY_AMBIENT_AIR=0` match them, frame rate unchanged within noise.
+* A fresh clone of this repository builds in about a minute and ran the FSR
+  `quality` profile for five minutes in the world without a device removal
+  (16-19 fps before the LEAN finding; 15 fps with LEAN=0).
 
-### On the RX 6750 GRE, turn VICTORY_CARD_WINDOWS_LEAN off
-
-`scripts\play.ps1` enables `VICTORY_CARD_WINDOWS_LEAN=1` (title memory windows
-kept on the card with no CPU side). On this card that renders the character's
-face and some materials **black** at 16-19 fps. It is one switch: with
-
-```
-VICTORY_CARD_WINDOWS_LEAN=0
-```
-
-and everything else at the fork's defaults, the picture is correct and the
-measured frame rate is **15 fps** with FSR 4.1.2 `quality` (2560x1440 rendered,
-3840x2160 out). The profile this repository recommends on RDNA2 is exactly
-that: the fork's defaults, the two ambient values below, and that one switch.
-
-| Run | Frame rate | Picture |
-|---|---|---|
-| fork defaults (LEAN on) | 16-19 fps | black face and some materials |
-| **defaults with `VICTORY_CARD_WINDOWS_LEAN=0`** | **15 fps** | **correct** |
-| `-Safe` (all fast paths off) | 10-11 fps | correct |
-
-The black picture is not THIN's: turning THIN off alone did not fix it
-(14 fps, still black, because LEAN stayed on). `-Safe` also turns LEAN off,
-which is why it looked correct - but it gives up the rest of the fast path
-for nothing.
-### Lighting: use the per-frame estimate, not the constant
-
-`scripts\play.ps1` sets `VICTORY_AMBIENT=constant:0.8` and
-`VICTORY_AMBIENT_AIR=1.5`. On the reference machine that renders night scenes
-with the character and the lit railings almost black next to the newer
-avatarmanz builds; the same save at the same spot with
-`VICTORY_AMBIENT=0.8` and `VICTORY_AMBIENT_AIR=0` matches their picture and
-leaves the frame rate unchanged within noise (13-17 fps with FSR `quality`).
-`scripts/play-fsr4k.ps1` now passes those two values by default; pass `-More`
-to override them.### Requirements
+Nothing above touches HypeLobbiesHD's code: it is the configuration and the
+diagnosis, plus the FSR port described at the top.
+### Requirements
 
 | | |
 |---|---|
