@@ -811,6 +811,27 @@ pub(crate) static HEAP_TEXTURES_FULL: AtomicU64 = AtomicU64::new(0);
 /// memory is looked at again, each counted from the look before.
 const RECHECK_FRAMES: [u64; 5] = [4, 12, 40, 120, 400];
 
+/// Frames between the looks at a texture picked by index whose pages the
+/// title shows at other addresses too, once its first looks are through
+/// (`VICTORY_ALIASED_RECHECK=0`: none; `=1`: only those). Such a texture can
+/// be rewritten through the other view with no descriptor write and nothing
+/// from the runtime to tell of it: its host copy then kept the old bytes for
+/// the rest of the run (the character's face and eyes black, now and then,
+/// in SlaktarnVI's runs).
+const ALIASED_RECHECK: u64 = 60;
+
+/// The frames to the next look after `looks` looks found it unchanged;
+/// `None`: no more looks. `aliased`: its pages are shown at other addresses.
+fn next_look(looks: u8, aliased: bool) -> Option<u64> {
+    static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    let mode = *MODE.get_or_init(|| match std::env::var("VICTORY_ALIASED_RECHECK").as_deref() {
+        Ok("0") => 0,
+        Ok("1") => 1,
+        _ => 2,
+    });
+    let keep = mode == 2 || (mode == 1 && aliased);
+    RECHECK_FRAMES.get(usize::from(looks) + 1).copied().or(keep.then_some(ALIASED_RECHECK))
+}
 /// Looks at uploaded textures picked by index that found the memory as it
 /// was, and that found it changed (uploaded again), since the start.
 pub(crate) static HEAP_TEXTURES_RECHECKED: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
@@ -2548,10 +2569,17 @@ impl State {
                         host.texture_slot_recheck(index, write, frame + 1, (at, len), print, looks, uploaded);
                         continue;
                     }
-                    match RECHECK_FRAMES.get(usize::from(looks) + 1) {
-                        Some(wait) => {
-                            host.texture_slot_recheck(index, write, frame + wait, (at, len), print, looks + 1, uploaded)
-                        }
+                    let aliased = !crate::inplace::shown_elsewhere(at as usize & !0xffff, (at + len) as usize).is_empty();
+                    match next_look(looks, aliased) {
+                        Some(wait) => host.texture_slot_recheck(
+                            index,
+                            write,
+                            frame + wait,
+                            (at, len),
+                            print,
+                            if usize::from(looks) + 1 < RECHECK_FRAMES.len() { looks + 1 } else { looks },
+                            uploaded,
+                        ),
                         None => host.texture_slot_done(index, write, None),
                     }
                     continue;

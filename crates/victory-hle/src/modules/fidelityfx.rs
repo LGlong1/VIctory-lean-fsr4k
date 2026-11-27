@@ -236,6 +236,16 @@ pub fn use_host_dir(dir: &Path) -> Result<(), String> {
     HOST.set(host)
         .map_err(|_| String::from("FidelityFX provider already initialized"))?;
     tracing::info!(folder = %dir.display(), version, "FidelityFX: selected PC upscaler");
+    // Frame generation (ported from SlaktarnVI, GPL-3.0): the presenter's swap
+    // chain becomes AMD's frame generation proxy.
+    if let Ok(mode) = std::env::var("VICTORY_FIDELITYFX_FRAMEGEN")
+        && matches!(mode.as_str(), "1" | "4")
+    {
+        match victory_gpu::external::use_frame_generation(dir, mode == "4") {
+            Ok(dll) => tracing::info!(dll, mode, "FidelityFX: frame generation on the title's upscaled frames"),
+            Err(why) => tracing::warn!("FidelityFX frame generation: {why}; off"),
+        }
+    }
     Ok(())
 }
 
@@ -639,6 +649,12 @@ fn record_dispatch(
     output_size: [u32; 2],
 ) -> u32 {
     let output = dispatch.resources[6].resource.cast::<Object>();
+    // Frame generation reads the title's own depth and motion vectors, before
+    // the resources below are replaced by host copies (SlaktarnVI, GPL-3.0).
+    let title_list = dispatch.list.cast::<Object>().cast_const();
+    let title_depth = dispatch.resources[1].resource.cast::<Object>().cast_const();
+    let title_motion = dispatch.resources[2].resource.cast::<Object>().cast_const();
+    let frame = frame_inputs(dispatch, ctx.creation.description.flags);
     // Alive for the call (the list holds them too).
     let mut textures = Vec::new();
     let mut backing_extents = [None; 7];
@@ -699,6 +715,9 @@ fn record_dispatch(
     let code = unsafe { (host.dispatch)(context, &raw mut dispatch.header) };
     if code == OK {
         victory_gpu::external::output_written(output);
+        if !title_depth.is_null() && !title_motion.is_null() {
+            list.frame_generation_inputs(title_depth, title_motion, frame);
+        }
         ctx.first_dispatch.call_once(|| {
             tracing::info!(render = ?dispatch.render_size, output = ?output_size, ?backing_extents,
                 jitter = ?dispatch.jitter, motion_vector_scale = ?dispatch.motion_scale,
@@ -712,6 +731,25 @@ fn record_dispatch(
         );
     }
     code
+}
+
+
+/// What frame generation needs of an upscaling (`settings` in the order of
+/// `ffxDispatchDescUpscale`: sharpening, sharpness, frame time,
+/// pre-exposure, reset, camera, flags) and its context's creation `flags`.
+fn frame_inputs(d: &DispatchUpscale, flags: u32) -> victory_gpu::external::FrameInputs {
+    let f = |i: usize| f32::from_bits(d.settings[i]);
+    victory_gpu::external::FrameInputs {
+        render: d.render_size,
+        jitter: d.jitter,
+        motion_scale: d.motion_scale,
+        frame_time_ms: f(2),
+        reset: d.settings[4] & 0xff != 0,
+        camera: [f(5), f(6), f(7), f(8)],
+        flags,
+        depth_desc: d.resources[1].description,
+        motion_desc: d.resources[2].description,
+    }
 }
 
 pub(crate) fn module() -> HleModule {

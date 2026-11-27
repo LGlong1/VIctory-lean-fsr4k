@@ -2649,6 +2649,18 @@ pub(crate) fn late_free_present() -> bool {
     late_stage() > 2
 }
 
+/// Frame generation's presents sent ahead as others are: under Wine unless
+/// `VICTORY_FG_SENT_AHEAD=0` (`=1` elsewhere).
+fn framegen_sent_ahead() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    crate::ab::pick("VICTORY_FG_SENT_AHEAD").unwrap_or_else(|| {
+        *ON.get_or_init(|| match std::env::var("VICTORY_FG_SENT_AHEAD").as_deref() {
+            Ok("0") => false,
+            Ok("1") => true,
+            _ => false,
+        })
+    })
+}
 /// The relay's first stage (`VICTORY_RELAY=1`; off by default; it turns
 /// [`late`] on at stage 3 unless `VICTORY_LATE_WAIT` says another stage,
 /// and is off with it, in the timing run and with kept snapshots).
@@ -6757,6 +6769,34 @@ impl HostList {
         }
     }
 
+    /// As [`HostList::settle`], returning the barrier to record instead of
+    /// recording it (frame generation batches its own). Ported from
+    /// SlaktarnVI (GPL-3.0).
+    pub(crate) fn move_texture(
+        &self,
+        copy: &std::sync::Arc<crate::resource::HostTexture>,
+        wanted: u32,
+    ) -> Option<D3D12_RESOURCE_BARRIER> {
+        let wanted = legal_for(copy.flags(), wanted);
+        self.changed_something();
+        let mut states = self.states.lock().unwrap_or_else(|e| e.into_inner());
+        let before = match states.entry(std::sync::Arc::as_ptr(copy) as usize) {
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert((wanted, wanted, copy.clone()));
+                None
+            }
+            std::collections::hash_map::Entry::Occupied(mut o) => {
+                let before = std::mem::replace(&mut o.get_mut().1, wanted);
+                (before != wanted).then_some(before)
+            }
+        }?;
+        Some(transition(
+            &copy.texture,
+            D3D12_RESOURCE_STATES(before as i32),
+            D3D12_RESOURCE_STATES(wanted as i32),
+        ))
+    }
+
     /// Moves host texture `copy` to `wanted` (a host state) in this list,
     /// as [`HostList::transition`] does a title resource's host copy, and
     /// records the barrier: for textures that are not a title resource's
@@ -9249,6 +9289,22 @@ impl Host {
 
 /// The swap chain formats a presented texture can be copied into: its own
 /// family's.
+/// Frames the display shows per second, frame generation's included: what
+/// the proxy counts as shown since the last line. `None` with it off.
+fn framegen_shown_per_second() -> Option<f64> {
+    if !crate::framegen::enabled() {
+        return None;
+    }
+    static LAST: Mutex<Option<(u64, std::time::Instant)>> = Mutex::new(None);
+    let now = crate::framegen::shown_total();
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    let previous = last.replace((now, std::time::Instant::now()))?;
+    let seconds = previous.1.elapsed().as_secs_f64();
+    (seconds > 0.2).then(|| (now - previous.0) as f64 / seconds)
+}
+
+/// The swap chain formats a presented texture can be copied into: its own
+/// family's.
 fn swap_format(format: DXGI_FORMAT) -> Option<DXGI_FORMAT> {
     Some(match format.0 {
         27..=32 => DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -9274,6 +9330,8 @@ struct Presenter {
     hwnd: HWND,
     meter: Meter,
     /// Composes a second presented plane over the first ([`crate::compose`]).
+    /// AMD frame generation, when on: `swap_chain` is then its proxy.
+    framegen: Option<crate::framegen::Presentation>,
     composer: Option<crate::compose::Composer>,
     #[cfg(feature = "diagnostics")]
     panel: panel::Panel,
@@ -9645,7 +9703,10 @@ impl Meter {
             self.caption = Some(buffer);
         }
         let Some(caption) = &self.caption else { return };
-        let text = format!(" | VIctory {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame");
+        let text = match framegen_shown_per_second() {
+            Some(shown) => format!(" | VIctory {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame | FG {shown:.0} shown"),
+            None => format!(" | VIctory {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame"),
+        };
         let mut text: Vec<u16> = caption.iter().copied().chain(text.encode_utf16()).collect();
         text.push(0);
         // Setting the text waits for the window's thread (a title thread,
@@ -9807,6 +9868,8 @@ impl Host {
             let read_now = crate::capture::wanted(frame) || crate::capture::listed(frame);
             #[cfg(not(feature = "diagnostics"))]
             let read_now = false;
+            // Frame generation's presents sent ahead as others are.
+            let read_now = read_now || (p.framegen.is_some() && !framegen_sent_ahead());
             let slot = if late_free_present() && !read_now {
                 let finished = FINISHED.load(Ordering::Acquire);
                 p.ahead.iter().position(|(_, flown)| *flown <= finished).or_else(|| {
@@ -9929,6 +9992,9 @@ impl Host {
             } else {
                 crate::popwatch::take(&self.device, list, texture)
             };
+            if let Some(fg) = &mut p.framegen {
+                fg.keep_hudless(&self.device, copy, &back, [width, height]);
+            }
             #[cfg(feature = "diagnostics")]
             p.panel.draw(self, copy, &back, (width, height), format);
             #[cfg(not(feature = "diagnostics"))]
@@ -9951,6 +10017,10 @@ impl Host {
                 ));
                 list.ResourceBarrier(&post);
             }
+            let generated = match &mut p.framegen {
+                Some(fg) => fg.prepare(&p.swap_chain, &self.device, copy, [width, height], frame),
+                None => false,
+            };
             copy.close();
             let flown = match slot {
                 Some(i) => {
@@ -9976,7 +10046,20 @@ impl Host {
             #[cfg(feature = "diagnostics")]
             crate::replay::record::present(texture, state);
             let mut showing = crate::timeline::span("the host's Present");
-            let status = p.swap_chain.Present(0, DXGI_PRESENT(0));
+            let status = p.swap_chain.Present(u32::from(generated), DXGI_PRESENT(0));
+            if let Some(fg) = &mut p.framegen {
+                fg.count_shown(&p.swap_chain);
+            }
+            if generated {
+                match (&mut p.framegen, status.is_ok()) {
+                    (Some(fg), true) => fg.presented(&p.swap_chain, frame),
+                    (Some(fg), false) => {
+                        tracing::warn!(?status, frame, "FidelityFX frame generation: present failed; off");
+                        fg.disable(&p.swap_chain);
+                    }
+                    (None, _) => {}
+                }
+            }
             // What Present answers, its first error said once (after fxceless b9011c9):
             // a removal it is the first to report looked as if a later call found it.
             if status.is_err() {
@@ -10025,9 +10108,18 @@ impl Host {
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
                 ..Default::default()
             };
-            let swap_chain = factory
-                .CreateSwapChainForHwnd(&self.queue, hwnd, &desc, None, None)?
-                .cast::<IDXGISwapChain3>()?;
+            let (swap_chain, framegen) = match crate::framegen::enabled()
+                .then(|| crate::framegen::Presentation::create(&factory, &self.device, &self.queue, hwnd, &desc))
+                .flatten()
+            {
+                Some((chain, fg)) => (chain, Some(fg)),
+                None => (
+                    factory
+                        .CreateSwapChainForHwnd(&self.queue, hwnd, &desc, None, None)?
+                        .cast::<IDXGISwapChain3>()?,
+                    None,
+                ),
+            };
             let copy = self.new_list()?;
             copy.close();
             tracing::info!(width, height, format = format.0, "presenting to a window");
@@ -10042,6 +10134,7 @@ impl Host {
                 hwnd,
                 meter: Meter::new(),
                 composer: None,
+            framegen,
                 #[cfg(feature = "diagnostics")]
                 panel: panel::Panel::new(),
             })

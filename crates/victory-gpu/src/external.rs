@@ -18,6 +18,12 @@ pub fn host_device() -> Option<ID3D12Device> {
 pub struct Recording<'a>(&'a crate::host::HostList);
 
 impl Recording<'_> {
+    /// The host list this recording writes into (frame generation reads its
+    /// deferred inputs from it).
+    pub fn host_list(&self) -> &crate::host::HostList {
+        self.0
+    }
+
     /// Move a title texture to the state the provider will see. The list
     /// holds the backing resource through submission.
     pub fn texture(&self, resource: This, state: u32) -> Option<(ID3D12Resource, u32)> {
@@ -42,6 +48,26 @@ impl Recording<'_> {
     /// Access flushes any pending host barriers before the provider runs.
     pub fn commands(&self) -> &ID3D12GraphicsCommandList {
         &self.0.list
+    }
+
+    /// At this host upscale: the title's depth and motion textures and the
+    /// upscale's constants feed frame generation for the next present.
+    pub fn frame_generation_inputs(
+        &self,
+        depth: *const crate::object::Object,
+        motion: *const crate::object::Object,
+        frame: FrameInputs,
+    ) {
+        if !crate::framegen::enabled() {
+            return;
+        }
+        let (Some(depth), Some(motion)) = (
+            crate::resource::host_copy(depth),
+            crate::resource::host_copy(motion),
+        ) else {
+            return;
+        };
+        crate::framegen::record(self.0, crate::framegen::Inputs { depth, motion, frame, pose: None });
     }
 }
 
@@ -68,4 +94,54 @@ pub fn record<R>(list: This, f: impl FnOnce(&Recording<'_>) -> R) -> Option<R> {
         state.external_compute();
     });
     out
+}
+/// What frame generation needs of an upscaled frame besides its depth and
+/// motion vectors: the upscale's constants and the motion and depth bits of
+/// its creation flags (ported from SlaktarnVI, GPL-3.0).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrameInputs {
+    pub render: [u32; 2],
+    pub jitter: [f32; 2],
+    pub motion_scale: [f32; 2],
+    pub frame_time_ms: f32,
+    pub reset: bool,
+    /// Near, far, vertical field of view, metres per view-space unit.
+    pub camera: [f32; 4],
+    pub flags: u32,
+    /// The FidelityFX descriptions of the depth and motion textures.
+    pub depth_desc: [u32; 8],
+    pub motion_desc: [u32; 8],
+}
+
+/// Turns on AMD frame generation for upscaled frames with
+/// `amd_fidelityfx_framegeneration_dx12.dll` from `dir`: the presenter's swap
+/// chain becomes its proxy. The DLL's path, or why not.
+pub fn use_frame_generation(dir: &std::path::Path, ml: bool) -> Result<String, String> {
+    crate::framegen::load(dir, ml)
+}
+
+/// At a host upscale recorded into the title list `list`: its depth and
+/// motion textures (title resources) and constants feed frame generation for
+/// the next present, once the list has run. Nothing when it is off.
+pub fn frame_generation_inputs(list: *const crate::object::Object, depth: *const crate::object::Object, motion: *const crate::object::Object, frame: FrameInputs) {
+    let Some(host) = crate::list::host_list(list) else {
+        return;
+    };
+    frame_generation_inputs_on(host, depth, motion, frame);
+}
+
+/// As [`frame_generation_inputs`] for a caller that already holds the host
+/// list (the FidelityFX module records into it), so it is not looked up again
+/// while it is being recorded.
+fn frame_generation_inputs_on(host: &crate::host::HostList, depth: *const crate::object::Object, motion: *const crate::object::Object, frame: FrameInputs) {
+    if !crate::framegen::enabled() {
+        return;
+    }
+    let (Some(depth), Some(motion)) = (
+        crate::resource::host_copy(depth),
+        crate::resource::host_copy(motion),
+    ) else {
+        return;
+    };
+    crate::framegen::record(host, crate::framegen::Inputs { depth, motion, frame, pose: None });
 }

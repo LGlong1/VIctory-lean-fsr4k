@@ -37,6 +37,10 @@ mod cores;
 pub mod descriptor;
 pub mod device;
 #[cfg(windows)]
+mod ab;
+#[cfg(windows)]
+mod framegen;
+#[cfg(windows)]
 mod draw;
 pub mod dxgi;
 #[cfg(windows)]
@@ -94,8 +98,7 @@ mod shadow;
 mod tiles;
 pub mod signature;
 mod switch;
-#[cfg(all(windows, feature = "diagnostics"))]
-mod ab;
+
 #[cfg(windows)]
 mod tdr;
 #[cfg(windows)]
