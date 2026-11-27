@@ -28,6 +28,12 @@ $settings = @{
     # GTA V style keyboard and mouse (Belobug PR #295); F2 or ` / ~ locks the
     # mouse look. Pass -More @{VICTORY_KBM_GTA='0'} to turn it off.
     VICTORY_KBM_GTA = '1'
+    # AMD frame generation (FidelityFX framegeneration DLL beside the
+    # upscaler): about 14 real frames to 28 shown here. CARD_STEPS=1 keeps
+    # the skinning constants early enough that faces stay lit.
+    VICTORY_FIDELITYFX_FRAMEGEN = '1'
+    VICTORY_FG_SENT_AHEAD = '1'
+    VICTORY_CARD_STEPS = '1'
 }
 foreach ($k in $More.Keys) { $settings[$k] = $More[$k] }
 & "$PSScriptRoot\play.ps1" -Exe $Exe -Build release -More $settings

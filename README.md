@@ -134,6 +134,29 @@ Extra settings:
   the plain keyboard bindings.
 
 The mapping is from [Belobug PR #295](https://github.com/Belobug/VIctory-Belobug-AMD/pull/295).
+## Frame generation
+
+`scripts/play-fsr4k.ps1` also turns on AMD FidelityFX frame generation for the
+upscaled frames (ported from [SlaktarnVI](https://github.com/Slaktarn700/SlaktarnVI),
+GPL-3.0). It needs `amd_fidelityfx_framegeneration_dx12.dll` in the same folder
+as the upscaler, which is the FidelityFX SDK 2.4.0 `signedbin`; the present is
+then AMD's frame generation proxy swap chain, and the display shows about two
+frames for each one rendered.
+
+Two switches matter on this card:
+
+* `VICTORY_CARD_STEPS=1` - with the default of 2 the character's face and arms
+  render black once frame generation is on (the skinning constants land after
+  the draws); one step keeps them early enough. Faces stay lit in every run
+  since.
+* `VICTORY_FG_SENT_AHEAD=1` - with the proxy's presents serialized the native
+  frame rate drops from about 14 to 10; sending them ahead as the other
+  presents restores 14-15.
+
+Measured here (RX 6750 GRE, Windows 10, FSR 4.1.2 quality): 14-15 real frames
+and 27-29 shown in the world, 20-24 shown in the heaviest scenes. The menu
+shows the same number on both sides because the title does not upscale it, so
+frame generation has nothing to insert there.
 ## NVIDIA
 
 FSR is **off by default** and must stay off on NVIDIA: the PC upscaler is
