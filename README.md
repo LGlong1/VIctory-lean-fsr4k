@@ -137,7 +137,7 @@ The mapping is from [Belobug PR #295](https://github.com/Belobug/VIctory-Belobug
 ## Frame generation (not in this build)
 
 An AMD frame generation port from [SlaktarnVI](https://github.com/Slaktarn700/SlaktarnVI)
-lives on the local `feat/texport` branch only: on this base it doubles the
+lives on the [feat/texport branch](https://github.com/LGlong1/VIctory-lean-fsr4k/tree/feat/texport) only: on this base it doubles the
 shown rate (14-15 real, 27-29 shown) but lets a few faces and textures come
 out black at some view angles, and the patch that was to fix it makes the
 device go away within a minute. It needs SlaktarnVI's newer texture-slot
