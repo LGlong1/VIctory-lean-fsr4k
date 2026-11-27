@@ -25,6 +25,9 @@ $settings = @{
     # machine; the per-frame estimate matches the newer avatarmanz builds.
     VICTORY_AMBIENT = '0.8'
     VICTORY_AMBIENT_AIR = '0'
+    # GTA V style keyboard and mouse (Belobug PR #295); F2 or ` / ~ locks the
+    # mouse look. Pass -More @{VICTORY_KBM_GTA='0'} to turn it off.
+    VICTORY_KBM_GTA = '1'
 }
 foreach ($k in $More.Keys) { $settings[$k] = $More[$k] }
 & "$PSScriptRoot\play.ps1" -Exe $Exe -Build release -More $settings

@@ -100,6 +100,17 @@ first use is gone.
 4. Persisted data (saves) defaults to `%LOCALAPPDATA%\victory\data`; point
    `VICTORY_DATA_DIR` elsewhere to move it.
 
+## Keyboard and mouse
+
+The fork carries the optional GTA V style keyboard and mouse mapping from
+[Belobug PR #295](https://github.com/Belobug/VIctory-Belobug-AMD/pull/295)
+(`VICTORY_KBM_GTA=1`), enabled by `scripts/play-fsr4k.ps1`. `W A S D` move,
+the mouse looks (press `F2` or `` ` `` / `~` to lock or unlock the pointer),
+left button shoots or accelerates, right button aims or brakes, `Shift`
+sprints, `Space` jumps, `F` enters or leaves a vehicle, `R` reloads, `Tab` is
+the weapon wheel, `Q` takes cover. Pass `-More @{VICTORY_KBM_GTA='0'}` to keep
+the pad-only mapping.
+
 ## NVIDIA
 
 FSR is **off by default** and must stay off on NVIDIA: the PC upscaler is
