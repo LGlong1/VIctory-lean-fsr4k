@@ -5837,13 +5837,25 @@ fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Sha
         note(shadow);
         return Some(shadow.clone());
     }
+    // The window is made without the lock (calls into the driver: every
+    // list thread asking for any window queued behind them, Belobug#443)
+    // and put in after, unless another thread put the same one in meanwhile.
+    drop(map);
+    let finish = |shadow: Arc<Shadow>| -> Option<Arc<Shadow>> {
+        let mut map = LOOSE.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(theirs) = map.get(&(start, len)) {
+            note(theirs);
+            return Some(theirs.clone());
+        }
+        note(&shadow);
+        map.insert((start, len), shadow.clone());
+        Some(shadow)
+    };
     // In place, if asked for and the window's memory can be opened: the
     // window is the title's own memory, with nothing to copy.
     if let Some(placed) = crate::port::place_for(start, len, true).or_else(|| crate::inplace::place_for(start, len, true)) {
         let shadow = Arc::new(Shadow::placed(placed, start, len, true));
-        note(&shadow);
-        map.insert((start, len), shadow.clone());
-        return Some(shadow);
+        return finish(shadow);
     }
     // One buffer in the card's memory, filled by the CPU through the bus.
     if let Some((buffer, data)) = window_mapped_for(len) {
@@ -5854,9 +5866,7 @@ fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Sha
         shadow.window = true;
         shadow.mapped = true;
         let shadow = Arc::new(shadow);
-        note(&shadow);
-        map.insert((start, len), shadow.clone());
-        return Some(shadow);
+        return finish(shadow);
     }
     // Lean: the card side only, and a CPU side nothing writes.
     if lean_windows()
@@ -5883,9 +5893,7 @@ fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Sha
                 LEAN_BYTES.fetch_add(len, Ordering::Relaxed);
                 let shadow = Arc::new(shadow);
                 CARDED.lock().unwrap_or_else(|e| e.into_inner()).push(Arc::downgrade(&shadow));
-                note(&shadow);
-                map.insert((start, len), shadow.clone());
-                return Some(shadow);
+                return finish(shadow);
             }
             None => {
                 WINDOW_CARD_BYTES.fetch_sub(len, Ordering::Relaxed);
@@ -5925,15 +5933,19 @@ fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Sha
     if shadow.card.is_some() {
         CARDED.lock().unwrap_or_else(|e| e.into_inner()).push(Arc::downgrade(&shadow));
     }
-    note(&shadow);
-    map.insert((start, len), shadow.clone());
-    Some(shadow)
+    finish(shadow)
 }
 
 /// Copies of single buffer views' own bytes ([`exact`]), by (start,
 /// bytes), each with the asking that last took it; and the askings so far.
 #[allow(clippy::type_complexity)]
-static EXACT: Mutex<(u64, BTreeMap<(u64, u64), (Arc<Shadow>, u64)>)> = Mutex::new((0, BTreeMap::new()));
+static EXACT: RwLock<BTreeMap<(u64, u64), (Arc<Shadow>, AtomicU64)>> = RwLock::new(BTreeMap::new());
+
+/// The askings of [`exact`] so far (its clock for "not asked for lately").
+static EXACT_TICK: AtomicU64 = AtomicU64::new(0);
+
+/// The size of [`EXACT`]'s map at which its next sweep comes.
+static EXACT_SWEEP_AT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Since the last frame line: askings for such copies, and copies made.
 static EXACT_STATS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
@@ -5965,28 +5977,57 @@ pub(crate) fn exact(address: u64, len: u64) -> Option<Arc<Shadow>> {
         return None;
     }
     EXACT_STATS[0].fetch_add(1, Ordering::Relaxed);
-    let mut guard = EXACT.lock().unwrap_or_else(|e| e.into_inner());
-    let (tick, map) = &mut *guard;
-    *tick += 1;
-    let now = *tick;
-    if let Some((shadow, used)) = map.get_mut(&(address, len)) {
-        *used = now;
-        shadow.used.store(crate::host::moment(), Ordering::Relaxed);
-        return Some(shadow.clone());
+    // (Belobug#443, by Wesney, ported: profiles of the list threads on an
+    // RTX 4070 12 GB found them waiting here and in `loose` a fifth to a
+    // quarter of their time; under 3 % after.)
+    let now = EXACT_TICK.fetch_add(1, Ordering::Relaxed) + 1;
+    // Found (nearly always): under the shared lock, so that list threads
+    // asking at once do not queue.
+    {
+        let map = EXACT.read().unwrap_or_else(|e| e.into_inner());
+        if let Some((shadow, used)) = map.get(&(address, len)) {
+            used.store(now, Ordering::Relaxed);
+            shadow.used.store(crate::host::moment(), Ordering::Relaxed);
+            return Some(shadow.clone());
+        }
     }
-    if map.len() >= MANY {
-        // Held by the map alone (no list), its buffer by the copy alone (no
-        // slot shows it), and not asked for lately.
-        map.retain(|_, (shadow, used)| {
-            Arc::strong_count(shadow) > 1 || crate::host::references(&shadow.buffer) > 1 || *used + LATELY > now
-        });
+    {
+        let mut map = EXACT.write().unwrap_or_else(|e| e.into_inner());
+        if let Some((shadow, used)) = map.get(&(address, len)) {
+            used.store(now, Ordering::Relaxed);
+            shadow.used.store(crate::host::moment(), Ordering::Relaxed);
+            return Some(shadow.clone());
+        }
+        // The sweep looks at every copy kept (two calls into the driver
+        // each) under the lock every list thread takes here: on every miss
+        // with ~2,700 kept it was a fifth of their time. Now once the map
+        // has doubled since the last sweep. Held by the map alone (no list),
+        // its buffer by the copy alone (no slot shows it), and not asked
+        // for lately.
+        if map.len() >= EXACT_SWEEP_AT.load(Ordering::Relaxed).max(MANY) {
+            map.retain(|_, (shadow, used)| {
+                Arc::strong_count(shadow) > 1
+                    || crate::host::references(&shadow.buffer) > 1
+                    || used.load(Ordering::Relaxed) + LATELY > now
+            });
+            EXACT_SWEEP_AT.store((map.len() * 2).max(MANY), Ordering::Relaxed);
+        }
     }
+    // The buffer is made without the lock (a driver call) and the map asked
+    // again after: a thread that made the same copy meanwhile wins.
     let (buffer, data) = host()?.shared_buffer(len.next_multiple_of(256))?;
     crate::host::name(&buffer, || format!("title view {address:#x}+{len:#x}"));
     // SAFETY: a live buffer.
     let gpu = unsafe { buffer.GetGPUVirtualAddress() };
     let shadow = Arc::new(Shadow::new(buffer, data, gpu, address, len));
-    map.insert((address, len), (shadow.clone(), now));
+    let mut map = EXACT.write().unwrap_or_else(|e| e.into_inner());
+    if let Some((theirs, used)) = map.get(&(address, len)) {
+        used.store(now, Ordering::Relaxed);
+        theirs.used.store(crate::host::moment(), Ordering::Relaxed);
+        return Some(theirs.clone());
+    }
+    map.insert((address, len), (shadow.clone(), AtomicU64::new(now)));
+    drop(map);
     EXACT_STATS[1].fetch_add(1, Ordering::Relaxed);
     OWN_MADE.fetch_add(1, Ordering::Relaxed);
     Some(shadow)
@@ -6003,7 +6044,7 @@ pub(crate) fn exact_line(frames: f64) {
     if asked == 0 {
         return;
     }
-    let kept = EXACT.lock().unwrap_or_else(|e| e.into_inner()).1.len();
+    let kept = EXACT.read().unwrap_or_else(|e| e.into_inner()).len();
     tracing::info!(
         "buffer views off their copy's elements (they were refused and read zeros; VICTORY_VIEW_BYTES=0 refuses them again): \
          {:.1} asked for per frame, {:.1} copies of their own bytes made per frame, {kept} kept",
