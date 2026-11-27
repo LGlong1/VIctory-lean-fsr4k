@@ -116,6 +116,16 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
 - **Frame rate follows free RAM**: four runs of identical code gave 1.6-6.0 fps, in the order
   of the lowest free memory. Every RAM cut is a frame-rate gain on this PC.
 
+- **Build settings and RAM switches** (later the same day): thin LTO and x86-64-v3 from
+  Marvisak#3011 kept (A/B was noise). Belobug#373 (`VICTORY_SEND_SPARE_MB`,
+  `VICTORY_SCRATCH_SPARE_MB`) and #374 (`VICTORY_STAGING_IDLE_MS`, `VICTORY_WINDOW_IDLE_MS`,
+  `VICTORY_READ_KEEP_MB`) taken as switches, off: ~0.4 GB less peak, slower frames. Belobug#372
+  is our `VICTORY_LIST_IDLE_MS` already; #386 matters only without `VICTORY_RESIDENCY`.
+- **Run-to-run noise beats every small change here**: with 17-19 GB free before a run and
+  ~19 GB private at the scene, each run pages differently. Small CPU wins cannot be measured
+  until the peak is well under the free RAM; the 8 GB of texture copies and pool and the
+  3 GB of window copies are what is big enough to matter.
+
 ## Done (session 1)
 
 - **avatarmanz main merged** (6d0ae9c1, 77 commits): renderer ports 5-7, their
@@ -322,3 +332,5 @@ a time, use `warm --jobs 4`, and do not build while a run is going (RAM).
 | 2026-11-26 | + Agility SDK 1.620.2, **unwarmed** (run `s-agility-1126-144950`) | opening cutscene | device13=true, opening=Part; library rejected, pipelines made in the scene: black, median 394 ms (2.5 fps), 18.3 GB peak; not a measure of Part |
 | 2026-11-26 | + avatarmanz#377 #376 #391, Belobug#62 #32 (batch), A/B against d2e2d0b, Series S | opening cutscene | base 323 / 361 ms, batch **153** / 312 ms median (6.5 / 3.2 fps; the second batch run paged to 8 MB free); best 94 ms; preparing 82-240 ms; 18.9-19.1 GB, as before; no commit left behind |
 | 2026-11-26 | batch, `VICTORY_WINDOWS_BAR_MB=4096 VICTORY_WINDOWS_BAR_PCT=97`, A B A B | opening cutscene | **`card memory the CPU maps supported=false`**: nothing moved (window copies 3.1 GB either way). Identical code ran 637 / 314 / 168 / 232 ms median: frame rate follows free RAM at worst (47 MB -> 1.6 fps, 1,104 MB -> 6.0 fps) |
+| 2026-11-26 | + thin LTO, x86-64-v3 (Marvisak#3011), A B A B against the batch | opening cutscene | 164 / 465 ms without, 500 / 369 ms with: noise (lowest free 50-385 MB). Kept: standard settings, tests pass |
+| 2026-11-26 | + Belobug#373 #374, `VICTORY_SEND_SPARE_MB=128 VICTORY_SCRATCH_SPARE_MB=32 VICTORY_READ_KEEP_MB=16 VICTORY_STAGING_IDLE_MS=10000`, A B A B | opening cutscene | peak **18.2-18.3 GB with, 18.5-18.8 without** (~0.4 GB); frames 425 / 1,676 ms with, 274 / 614 without (worse in both pairs); lowest free RAM no better. Left off (unset = as before) |
