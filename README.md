@@ -102,15 +102,38 @@ first use is gone.
 
 ## Keyboard and mouse
 
-The fork carries the optional GTA V style keyboard and mouse mapping from
-[Belobug PR #295](https://github.com/Belobug/VIctory-Belobug-AMD/pull/295)
-(`VICTORY_KBM_GTA=1`), enabled by `scripts/play-fsr4k.ps1`. `W A S D` move,
-the mouse looks (press `F2` or `` ` `` / `~` to lock or unlock the pointer),
-left button shoots or accelerates, right button aims or brakes, `Shift`
-sprints, `Space` jumps, `F` enters or leaves a vehicle, `R` reloads, `Tab` is
-the weapon wheel, `Q` takes cover. Pass `-More @{VICTORY_KBM_GTA='0'}` to keep
-the pad-only mapping.
+`VICTORY_KBM_GTA=1` (on by default in `scripts/play-fsr4k.ps1`) puts a GTA V
+PC layout on the stand-in gamepad. The pointer starts **unlocked** so menus and
+window switching are never trapped: press `F2`, or `` ` `` / `~`, to capture it
+for mouse look, and again to let it go. While captured the cursor is hidden
+inside the game window; while it is not, mouse buttons are only forwarded when
+the pointer is over the game's client area.
 
+| Input | Xbox control | In game |
+|---|---|---|
+| `W A S D` | Left stick | Move / steer |
+| Mouse move; `I J K L` as a fallback | Right stick | Camera / aim |
+| `LMB` / `RMB` | RT / LT | Shoot or accelerate / aim or brake-reverse |
+| `Shift` / `Enter` | A | Sprint / menu confirm |
+| `Space` / `X` | X | Jump, climb, vault |
+| `R` / `Backspace` | B | Reload, melee / menu back |
+| `F` | Y | Enter or leave a vehicle |
+| `Tab` | LB | Weapon wheel |
+| `Q` | RB | Take cover / handbrake |
+| `Ctrl` | L3 | Crouch, stealth, horn |
+| `C`, `MMB`, `CapsLock`, `H` | R3 | Look behind / special |
+| `E`; arrows; `M`, `Z`, `G` | D-pad | Interact, phone, minimap or character wheel |
+| `V` | View | Change camera |
+| `Esc` / `P` | Menu | Pause menu or map (also releases the pointer) |
+
+Extra settings:
+
+* `VICTORY_MOUSE_SENS` - mouse camera sensitivity multiplier (default `1.0`).
+* `VICTORY_MOUSE_INVERT_Y=1` - invert the vertical axis.
+* `-More @{VICTORY_KBM_GTA='0'}` on the launcher - back to the pad table and
+  the plain keyboard bindings.
+
+The mapping is from [Belobug PR #295](https://github.com/Belobug/VIctory-Belobug-AMD/pull/295).
 ## NVIDIA
 
 FSR is **off by default** and must stay off on NVIDIA: the PC upscaler is
