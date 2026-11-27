@@ -103,6 +103,19 @@ Marvisak/VIctory, `fxceless`, `dexnom`, `belobug`.
 - Commit read right after a run is high while the process is still ending
   (30.7 GB, 20.9 GB 20 s later): read it once `victory.exe` is gone.
 
+- **Second PR check (217 new or changed PRs)**: hot-path ones with measured numbers taken where
+  they apply here: avatarmanz#377 (holes' answers kept 30 frames, `VICTORY_HOLES_ONCE`), #376
+  (AVX2 compare in find_pieces, no AddRef/Release per bound slot), #391
+  (`VICTORY_WINDOWS_BAR_PCT`), Belobug#62 (descriptor copy finds its heap once per run), #32
+  (texture write check without building lists). fxceless#1390 (`VICTORY_EXACT_REUSE`)
+  conflicts with our `exact()`: to port. Verdicts in `docs/pr-review-2026-11-26.md`.
+- **Card memory the CPU maps is not offered on this PC** (`supported=false`): GPU upload heaps
+  need Resizable BAR on (BAR1 is 256 MiB here: off in the BIOS) and Windows 11 24H2
+  (build 26080+; this PC is 22000). With both, `VICTORY_WINDOWS_BAR_MB` would take the
+  ~3.1 GB of window copies out of the PC's RAM. Until then RAM cuts must come from our side.
+- **Frame rate follows free RAM**: four runs of identical code gave 1.6-6.0 fps, in the order
+  of the lowest free memory. Every RAM cut is a frame-rate gain on this PC.
+
 ## Done (session 1)
 
 - **avatarmanz main merged** (6d0ae9c1, 77 commits): renderer ports 5-7, their
@@ -307,3 +320,5 @@ a time, use `warm --jobs 4`, and do not build while a run is going (RAM).
 | 2026-11-26 | same, again (window closed at 78 s) | opening cutscene | host lists 764-861; 16.83 GB peak; 261 ms median. **This set is play.ps1's default now** (`-Safe` drops it) |
 | 2026-11-26 | + `VICTORY_LIST_LAZY=1`, idle trimming | opening cutscene (short: window closed at 77 s) | host lists alive 853-977 (was 1,349); 0.5-0.75 GB less private at the same point; 254 ms median (noise) |
 | 2026-11-26 | + Agility SDK 1.620.2, **unwarmed** (run `s-agility-1126-144950`) | opening cutscene | device13=true, opening=Part; library rejected, pipelines made in the scene: black, median 394 ms (2.5 fps), 18.3 GB peak; not a measure of Part |
+| 2026-11-26 | + avatarmanz#377 #376 #391, Belobug#62 #32 (batch), A/B against d2e2d0b, Series S | opening cutscene | base 323 / 361 ms, batch **153** / 312 ms median (6.5 / 3.2 fps; the second batch run paged to 8 MB free); best 94 ms; preparing 82-240 ms; 18.9-19.1 GB, as before; no commit left behind |
+| 2026-11-26 | batch, `VICTORY_WINDOWS_BAR_MB=4096 VICTORY_WINDOWS_BAR_PCT=97`, A B A B | opening cutscene | **`card memory the CPU maps supported=false`**: nothing moved (window copies 3.1 GB either way). Identical code ran 637 / 314 / 168 / 232 ms median: frame rate follows free RAM at worst (47 MB -> 1.6 fps, 1,104 MB -> 6.0 fps) |
