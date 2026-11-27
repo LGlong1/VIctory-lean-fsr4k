@@ -134,6 +134,14 @@ Extra settings:
   the plain keyboard bindings.
 
 The mapping is from [Belobug PR #295](https://github.com/Belobug/VIctory-Belobug-AMD/pull/295).
+## Frame generation (opt-in; not the default on this base)
+
+**Not enabled by default.** It doubles the shown frame rate (14-15 real,
+27-29 shown here) and the profile's switches are below, but on this base it
+lets a few faces and textures come out black now and then, at some view
+angles. The fix is the newer texture-slot machinery from SlaktarnVI's line,
+which is not ported here yet. To try it, pass these to `-More`:
+`VICTORY_FIDELITYFX_FRAMEGEN='1'; VICTORY_FG_SENT_AHEAD='1'; VICTORY_CARD_STEPS='1'`.
 ## Frame generation
 
 `scripts/play-fsr4k.ps1` also turns on AMD FidelityFX frame generation for the
