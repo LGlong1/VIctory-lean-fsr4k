@@ -134,40 +134,15 @@ Extra settings:
   the plain keyboard bindings.
 
 The mapping is from [Belobug PR #295](https://github.com/Belobug/VIctory-Belobug-AMD/pull/295).
-## Frame generation (opt-in; not the default on this base)
+## Frame generation (not in this build)
 
-**Not enabled by default.** It doubles the shown frame rate (14-15 real,
-27-29 shown here) and the profile's switches are below, but on this base it
-lets a few faces and textures come out black now and then, at some view
-angles. The fix is the newer texture-slot machinery from SlaktarnVI's line,
-which is not ported here yet. To try it, pass these to `-More`:
-`VICTORY_FIDELITYFX_FRAMEGEN='1'; VICTORY_FG_SENT_AHEAD='1'; VICTORY_CARD_STEPS='1'`.
-## Frame generation
-
-`scripts/play-fsr4k.ps1` also turns on AMD FidelityFX frame generation for the
-upscaled frames (ported from [SlaktarnVI](https://github.com/Slaktarn700/SlaktarnVI),
-GPL-3.0). It needs `amd_fidelityfx_framegeneration_dx12.dll` in the same folder
-as the upscaler, which is the FidelityFX SDK 2.4.0 `signedbin`; the present is
-then AMD's frame generation proxy swap chain, and the display shows about two
-frames for each one rendered.
-
-Three switches matter on this card:
-
-* `VICTORY_CARD_STEPS=1` - with the default of 2 the character's face and arms
-  render black once frame generation is on (the skinning constants land after
-  the draws); one step keeps them early enough. Faces stay lit in every run
-  since.
-* `VICTORY_FG_SENT_AHEAD=1` - with the proxy's presents serialized the native
-  frame rate drops from about 14 to 10; sending them ahead as the other
-  presents restores 14-15.
-* `VICTORY_TEXTURE_NO_WAIT=0` - uploads wait for title memory to hold still;
-  without it a few faces and textures came out black now and then, mostly
-  near the start of a walk.
-
-Measured here (RX 6750 GRE, Windows 10, FSR 4.1.2 quality): 14-15 real frames
-and 27-29 shown in the world, 20-24 shown in the heaviest scenes. The menu
-shows the same number on both sides because the title does not upscale it, so
-frame generation has nothing to insert there.
+An AMD frame generation port from [SlaktarnVI](https://github.com/Slaktarn700/SlaktarnVI)
+lives on the local `feat/texport` branch only: on this base it doubles the
+shown rate (14-15 real, 27-29 shown) but lets a few faces and textures come
+out black at some view angles, and the patch that was to fix it makes the
+device go away within a minute. It needs SlaktarnVI's newer texture-slot
+machinery, which this base does not have. The profile here is FSR 4.1.2 at 4K
+without frame generation.
 ## NVIDIA
 
 FSR is **off by default** and must stay off on NVIDIA: the PC upscaler is
