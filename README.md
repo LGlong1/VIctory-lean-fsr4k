@@ -143,7 +143,7 @@ as the upscaler, which is the FidelityFX SDK 2.4.0 `signedbin`; the present is
 then AMD's frame generation proxy swap chain, and the display shows about two
 frames for each one rendered.
 
-Two switches matter on this card:
+Three switches matter on this card:
 
 * `VICTORY_CARD_STEPS=1` - with the default of 2 the character's face and arms
   render black once frame generation is on (the skinning constants land after
@@ -152,6 +152,9 @@ Two switches matter on this card:
 * `VICTORY_FG_SENT_AHEAD=1` - with the proxy's presents serialized the native
   frame rate drops from about 14 to 10; sending them ahead as the other
   presents restores 14-15.
+* `VICTORY_TEXTURE_NO_WAIT=0` - uploads wait for title memory to hold still;
+  without it a few faces and textures came out black now and then, mostly
+  near the start of a walk.
 
 Measured here (RX 6750 GRE, Windows 10, FSR 4.1.2 quality): 14-15 real frames
 and 27-29 shown in the world, 20-24 shown in the heaviest scenes. The menu
