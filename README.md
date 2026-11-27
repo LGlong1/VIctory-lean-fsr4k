@@ -83,7 +83,17 @@ at AMD's `signedbin` folder.
 Everything else in the tree is HypeLobbiesHD's and the upstream forks' work;
 see Credits.
 
-### Requirements
+
+### Lighting: use the per-frame estimate, not the constant
+
+`scripts\play.ps1` sets `VICTORY_AMBIENT=constant:0.8` and
+`VICTORY_AMBIENT_AIR=1.5`. On the reference machine that renders night scenes
+with the character and the lit railings almost black next to the newer
+avatarmanz builds; the same save at the same spot with
+`VICTORY_AMBIENT=0.8` and `VICTORY_AMBIENT_AIR=0` matches their picture and
+leaves the frame rate unchanged within noise (13-17 fps with FSR `quality`).
+`scripts/play-fsr4k.ps1` now passes those two values by default; pass `-More`
+to override them.### Requirements
 
 | | |
 |---|---|

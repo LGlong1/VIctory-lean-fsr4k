@@ -17,6 +17,14 @@ if (-not (Test-Path $dll)) {
     Write-Error "amd_fidelityfx_upscaler_dx12.dll not found in $FidelityFx"
     exit 2
 }
-$settings = @{ VICTORY_FSR_4K = $Preset; VICTORY_FIDELITYFX_DIR = $FidelityFx }
+$settings = @{
+    VICTORY_FSR_4K = $Preset
+    VICTORY_FIDELITYFX_DIR = $FidelityFx
+    # play.ps1's constant ambient (VICTORY_AMBIENT=constant:0.8, AMBIENT_AIR=1.5)
+    # renders night scenes with characters and railings in near-black on this
+    # machine; the per-frame estimate matches the newer avatarmanz builds.
+    VICTORY_AMBIENT = '0.8'
+    VICTORY_AMBIENT_AIR = '0'
+}
 foreach ($k in $More.Keys) { $settings[$k] = $More[$k] }
 & "$PSScriptRoot\play.ps1" -Exe $Exe -Build release -More $settings
