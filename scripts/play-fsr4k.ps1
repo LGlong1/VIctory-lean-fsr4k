@@ -34,6 +34,9 @@ $settings = @{
     VICTORY_FIDELITYFX_FRAMEGEN = '1'
     VICTORY_FG_SENT_AHEAD = '1'
     VICTORY_CARD_STEPS = '1'
+    # Uploaded textures wait for title memory to hold still: without it a
+    # few faces and textures come out black now and then.
+    VICTORY_TEXTURE_NO_WAIT = '0'
 }
 foreach ($k in $More.Keys) { $settings[$k] = $More[$k] }
 & "$PSScriptRoot\play.ps1" -Exe $Exe -Build release -More $settings
